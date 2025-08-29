@@ -1,89 +1,90 @@
-using System.Text.Json.Serialization;
+using System;
+using System.Collections.Generic;
 
-namespace SqlCatalogApp;
-
-internal record ColumnInfo(string Type, bool Nullable, string? Default);
-
-internal class TableInfo
+namespace SqlCatalogApp
 {
-    public string? Schema { get; set; }
-    public string Original_Name { get; set; } = "";
-    public string Safe_Name { get; set; } = "";
-    public Dictionary<string, ColumnInfo> Columns { get; } = new();
-    public List<string> Primary_Key { get; } = new();
-    public Dictionary<string, List<string>> Indexes { get; } = new();
-    public List<ForeignKeyRef> Foreign_Keys { get; } = new();
-}
+    public sealed class Catalog
+    {
+        public Dictionary<string, TableInfo> Tables { get; } =
+            new Dictionary<string, TableInfo>(StringComparer.OrdinalIgnoreCase);
 
-internal record ForeignKeyRef(
-    string Column,
-    string? Referenced_Schema,
-    string Referenced_Table,
-    string Referenced_Column,
-    string Referenced_Table_Original
-);
+        public Dictionary<string, ViewInfo> Views { get; } =
+            new Dictionary<string, ViewInfo>(StringComparer.OrdinalIgnoreCase);
 
-internal class ProcFuncBase
-{
-    public string? Schema { get; set; }
-    public List<ParamInfo> Params { get; } = new();
-    public List<ObjRef> Reads { get; } = new();
-    public List<ObjRef> Writes { get; } = new();
-    public List<ObjRef> Calls { get; } = new();
+        public Dictionary<string, ProcedureInfo> Procedures { get; } =
+            new Dictionary<string, ProcedureInfo>(StringComparer.OrdinalIgnoreCase);
 
-    [JsonIgnore]
-    public bool Is_Read_Only => Writes.Count == 0;
+        // Computed at the end of Program.cs
+        public List<string> Unused_Tables { get; } = new List<string>();
+        public List<UnusedColumn> Unused_Columns { get; } = new List<UnusedColumn>();
+    }
 
-    // Serialized convenience field: "read" (no writes) or "write" (has writes)
-    public string Access => Is_Read_Only ? "read" : "write";
-}
+    public sealed class TableInfo
+    {
+        public string Schema { get; set; } = "";
+        public string Original_Name { get; set; } = "";
+        public string Safe_Name { get; set; } = "";
+        public string? Doc { get; set; }
 
-internal record ParamInfo(string Name, string Type);
-internal record ObjRef(string? Schema, string Name);
+        public Dictionary<string, ColumnInfo> Columns { get; } =
+            new Dictionary<string, ColumnInfo>(StringComparer.OrdinalIgnoreCase);
 
-internal class ProcedureInfo : ProcFuncBase { }
-internal class FunctionInfo : ProcFuncBase { }
+        public List<string> Primary_Key { get; } = new List<string>();
 
-internal class ViewInfo
-{
-    public string? Schema { get; set; }
-    public List<string> Columns { get; } = new();
-    public List<ObjRef> Reads { get; } = new();
-}
+        public List<ForeignKeyRef> Foreign_Keys { get; } = new List<ForeignKeyRef>();
 
-internal class Catalog
-{
-    public Dictionary<string, TableInfo> Tables { get; } = new();
-    public Dictionary<string, ViewInfo> Views { get; } = new();
-    public Dictionary<string, ProcedureInfo> Procedures { get; } = new();
-    public Dictionary<string, FunctionInfo> Functions { get; } = new();
+        public Dictionary<string, List<string>> Indexes { get; } =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-    [JsonIgnore]
-    public Dictionary<string, List<string>> Dependencies =>
-        Tables.ToDictionary(
-            kv => kv.Key,
-            kv => kv.Value.Foreign_Keys
-                  .Select(f => f.Referenced_Table)
-                  .Distinct()
-                  .OrderBy(x => x)
-                  .ToList()
-        );
-}
+        public List<ObjRef> Referenced_By { get; } = new List<ObjRef>(); // who reads/writes this table
+        public bool Is_Unused { get; set; }
+    }
 
-/* ---------- New: schema clustering index & export root ---------- */
+    public sealed record ColumnInfo(string Type, bool Nullable, string? Default, string? Doc = null)
+    {
+        public List<UsageRef> Referenced_In { get; } = new List<UsageRef>(); // column-level usage
+    }
 
-internal class SchemaGroup
-{
-    public List<string> Tables { get; } = new();
-    public List<string> Views { get; } = new();
-    public List<string> Procedures_Read { get; } = new();
-    public List<string> Procedures_Write { get; } = new();
-    public List<string> Functions_Read { get; } = new();
-    public List<string> Functions_Write { get; } = new();
-}
+    public sealed class ViewInfo
+    {
+        public string Schema { get; set; } = "";
+        public string Original_Name { get; set; } = "";
+        public string Safe_Name { get; set; } = "";
 
-internal class CatalogExport
-{
-    public Catalog Catalog { get; set; } = new();
-    public Dictionary<string, SchemaGroup> Schema_Index { get; set; } = new();
+        public List<string> Columns { get; } = new List<string>(); // select list (may include "*")
+        public List<ObjRef> Reads { get; } = new List<ObjRef>();    // tables it reads
+        public string? Doc { get; set; }
+    }
+
+    public sealed class ProcedureInfo
+    {
+        public string Schema { get; set; } = "";
+        public string Original_Name { get; set; } = "";
+        public string Safe_Name { get; set; } = "";
+
+        public List<string> Params { get; } = new List<string>();
+        public List<ObjRef> Reads { get; } = new List<ObjRef>();
+        public List<ObjRef> Writes { get; } = new List<ObjRef>();   // <-- fixed
+        public List<ObjRef> Calls { get; } = new List<ObjRef>();
+
+        // key = safe table ("schema·name"), values = set of column names referenced
+        public Dictionary<string, HashSet<string>> Column_Refs { get; } =
+            new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        public string? Doc { get; set; }
+    }
+
+    public sealed record ForeignKeyRef(
+        string Local_Column,
+        string Ref_Schema,
+        string Ref_Table,
+        string Ref_Column,
+        string Ref_Table_Original
+    );
+
+    public sealed record ObjRef(string? Schema, string Safe_Name);
+
+    public sealed record UsageRef(string Kind, string Safe_Name, string Context);
+
+    public sealed record UnusedColumn(string Table, string Column);
 }

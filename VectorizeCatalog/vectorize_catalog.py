@@ -1,217 +1,440 @@
-# vectorize_catalog.py
-import os, json
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Builds a semantic index from ../output/catalog.json and ../output/sql_exports,
+including:
+  • tables (with columns, pk/fk, indexes, doc, unused flag)
+  • views (reads, projected columns, doc)
+  • procedures (reads/writes/calls, column refs, doc)
+  • functions (discovered from sql_exports if present)
+  • UNUSED tables & columns as separate, searchable items
+
+Artifacts:
+  ../output/vector_index/
+      embeddings.npy       # float32 [N, D]
+      items.json           # metadata per item (kind/schema/name/safe_name/.../sql)
+      meta.json            # model, dim, created_at, counts
+  ../output/sql_entities.json  # simple list of entities + SQL (easy to “list” later)
+
+Environment (optional):
+  LMSTUDIO_BASE_URL=http://localhost:1234/v1
+  LMSTUDIO_API_KEY=lm-studio
+  EMBED_MODEL=text-embedding-nomic-embed-text-v1.5
+  USE_LMSTUDIO=1  (else uses sentence-transformers)
+  SQL_OUTPUT_DIR=/abs/path/to/output   (defaults to ../output relative to this file)
+"""
+
+from __future__ import annotations
+import os, json, re, sys, time
 from pathlib import Path
+from typing import Dict, List, Any, Tuple, Iterable, Optional
+
 import numpy as np
 
-CATALOG_PATH = "./output/catalog.json"
-INDEX_DIR = "./output/vector_index"
+# Optional: local embeddings if not using LM Studio
+USE_LMSTUDIO = os.getenv("USE_LMSTUDIO", "1") != "0"
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+LMSTUDIO_API_KEY  = os.getenv("LMSTUDIO_API_KEY", "lm-studio")
+EMBED_MODEL       = os.getenv("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
 
-# Default to LM Studio embedding server + your model
-BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
-API_KEY  = os.environ.get("LMSTUDIO_API_KEY", "lm-studio")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
-USE_LMSTUDIO = os.environ.get("USE_LMSTUDIO", "1") == "1"  # default ON for your setup
+BASE = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = Path(os.getenv("SQL_OUTPUT_DIR") or (BASE.parent / "output")).resolve()
+CATALOG_PATH  = DEFAULT_OUTPUT_DIR / "catalog.json"
+EXPORTS_DIR   = DEFAULT_OUTPUT_DIR / "sql_exports"      # tables/, views/, procedures/, functions/
+INDEX_DIR     = DEFAULT_OUTPUT_DIR / "vector_index"
+SQL_LIST_PATH = DEFAULT_OUTPUT_DIR / "sql_entities.json"
 
-def short(s, n=120):
-    s = " ".join(str(s).split())
-    return s if len(s) <= n else s[:n-1] + "…"
+BATCH = int(os.getenv("EMBED_BATCH", "64"))
 
-def join_cols(cols_dict, max_cols=60):
-    parts = []
-    for i, (col, info) in enumerate(cols_dict.items()):
-        if i >= max_cols:
-            parts.append(f"... (+{len(cols_dict)-max_cols} more cols)")
-            break
-        t = info.get("Type") or info.get("type") or ""
-        nn = "NULL" if (info.get("Nullable") or info.get("nullable")) else "NOT NULL"
-        dv = info.get("Default") or info.get("default")
-        parts.append(f"{col}: {t} {nn}" + (f" DEFAULT {dv}" if dv else ""))
-    return "; ".join(parts)
+# ------------------------------ Embedding backends ------------------------------
 
-def as_text_for_table(key, t):
-    schema = t.get("Schema") or t.get("schema") or "dbo"
-    safe = t.get("Safe_Name") or t.get("safe_name") or key
-    orig = t.get("Original_Name") or t.get("original_name") or key
-    cols = t.get("Columns") or t.get("columns") or {}
-    pk = t.get("Primary_Key") or t.get("primary_key") or []
-    fks = t.get("Foreign_Keys") or t.get("foreign_keys") or []
-    idx = t.get("Indexes") or t.get("indexes") or {}
+def embed_texts_lmstudio(texts: List[str], model: str) -> np.ndarray:
+    import requests
+    url = f"{LMSTUDIO_BASE_URL.rstrip('/')}/embeddings"
+    headers = {"Authorization": f"Bearer {LMSTUDIO_API_KEY}", "Content-Type": "application/json"}
+    vecs: List[List[float]] = []
+    for i in range(0, len(texts), BATCH):
+        chunk = texts[i:i+BATCH]
+        payload = {"model": model, "input": chunk}
+        r = requests.post(url, headers=headers, json=payload, timeout=600)
+        r.raise_for_status()
+        data = r.json()
+        vecs.extend(item["embedding"] for item in data["data"])
+    arr = np.array(vecs, dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-8
+    return arr / norms
 
-    fk_lines = []
+def embed_texts_local(texts: List[str]) -> np.ndarray:
+    from sentence_transformers import SentenceTransformer
+    model_name = os.getenv("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    m = SentenceTransformer(model_name)
+    vecs = m.encode(texts, batch_size=max(16, BATCH//2), show_progress_bar=True,
+                    convert_to_numpy=True, normalize_embeddings=True)
+    return vecs.astype(np.float32)
+
+def embed_texts(texts: List[str], model: str) -> np.ndarray:
+    if USE_LMSTUDIO:
+        return embed_texts_lmstudio(texts, model)
+    return embed_texts_local(texts)
+
+# ------------------------------ Utilities ------------------------------
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+def try_read(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+def safe_join(*parts: str) -> str:
+    return "·".join([p for p in parts if p])
+
+def summarize_list(items: Iterable[str], limit: int = 12) -> str:
+    items = [i for i in items if i]
+    if len(items) <= limit:
+        return ", ".join(items)
+    return ", ".join(items[:limit]) + f", … (+{len(items)-limit} more)"
+
+def load_sql_export(kind: str, safe_name: str) -> Tuple[Optional[str], Optional[str]]:
+    p = (EXPORTS_DIR / kind / f"{safe_name}.sql").resolve()
+    if p.exists():
+        return (str(p), try_read(p))
+    return (None, None)
+
+def build_table_text(t: Dict[str, Any]) -> str:
+    cols = t.get("columns") or t.get("Columns") or {}
+    col_lines = []
+    for cname, cinfo in cols.items():
+        typ = cinfo.get("type") or cinfo.get("Type")
+        nullable = cinfo.get("nullable") if "nullable" in cinfo else cinfo.get("Nullable")
+        default = cinfo.get("default") if "default" in cinfo else cinfo.get("Default")
+        cdoc = cinfo.get("doc") if "doc" in cinfo else cinfo.get("Doc")
+        line = f"- {cname}: {typ} " + ("(nullable)" if nullable else "(not null)")
+        if default:
+            line += f" default {default}"
+        if cdoc:
+            line += f" — {cdoc}"
+        col_lines.append(line)
+
+    pk = t.get("primary_key") or t.get("Primary_Key") or []
+    fks = t.get("foreign_keys") or t.get("Foreign_Keys") or []
+    idxs = t.get("indexes") or t.get("Indexes") or {}
+
+    # Format FKs safely (no nested f-strings)
+    fk_lines: List[str] = []
     for fk in fks:
-        ref_schema = fk.get("Referenced_Schema") or fk.get("referenced_schema")
-        ref_tab = fk.get("Referenced_Table") or fk.get("referenced_table")
-        ref_col = fk.get("Referenced_Column") or fk.get("referenced_column")
-        col = fk.get("Column") or fk.get("column")
-        fk_lines.append(f"FK {col} -> {ref_schema}.{ref_tab}({ref_col})")
+        lc = fk.get("local") or fk.get("Local_Column")
+        rs = fk.get("ref_schema") or fk.get("Ref_Schema")
+        rt = fk.get("ref_table") or fk.get("Ref_Table")
+        rc = fk.get("ref_column") or fk.get("Ref_Column")
+        fk_lines.append(f"{lc} -> {rs}.{rt}.{rc}")
 
-    idx_lines = []
-    for iname, cols_l in idx.items():
-        if isinstance(cols_l, dict) and "columns" in cols_l:
-            cols_l = cols_l["columns"]
-        idx_lines.append(f"INDEX {iname} ({', '.join(cols_l)})")
+    # Format indexes safely
+    idx_lines: List[str] = []
+    for k, v in (idxs.items() if isinstance(idxs, dict) else []):
+        if isinstance(v, list):
+            inner = ",".join(v)
+        else:
+            inner = str(v)
+        idx_lines.append(f"{k}({inner})")
 
-    text = (
-        f"TABLE {schema}.{orig} (safe: {safe}). "
-        f"PrimaryKey: {', '.join(pk) if pk else 'none'}. "
-        f"Columns: {join_cols(cols)}. "
-    )
-    if fk_lines:
-        text += " " + " ".join(fk_lines) + "."
-    if idx_lines:
-        text += " " + " ".join(idx_lines) + "."
-    return text
+    parts = [
+        f"TABLE {t.get('schema','')}.{t.get('Original_Name') or t.get('original_name') or t.get('name','')}".strip("."),
+        f"safe: {t.get('Safe_Name') or t.get('safe_name')}",
+        f"doc: {t.get('Doc') or t.get('doc') or ''}".strip(),
+        f"primary key: {summarize_list(pk)}" if pk else "",
+        f"foreign keys: {summarize_list(fk_lines)}" if fk_lines else "",
+        f"indexes: {summarize_list(idx_lines)}" if idx_lines else "",
+        "columns:",
+        *col_lines
+    ]
+    return "\n".join([p for p in parts if p])
 
-def as_text_for_view(name, v):
-    schema = v.get("Schema") or v.get("schema") or "dbo"
+def build_view_text(v: Dict[str, Any]) -> str:
     cols = v.get("Columns") or v.get("columns") or []
     reads = v.get("Reads") or v.get("reads") or []
-    reads_str = ", ".join([f"{(r.get('schema') or r.get('Schema') or 'dbo')}.{r.get('name') or r.get('Name')}" for r in reads])
-    return f"VIEW {schema}.{name}. Columns: {', '.join(cols) if cols else '(unknown)'}; Reads: {reads_str or 'none'}."
+    read_names = []
+    for r in reads:
+        read_names.append(r.get("Safe_Name") or r.get("safe_name") or safe_join(r.get("Schema") or r.get("schema"), r.get("Name") or r.get("name")))
+    parts = [
+        f"VIEW {v.get('schema','')}.{v.get('Original_Name') or v.get('original_name') or v.get('name','')}".strip("."),
+        f"safe: {v.get('Safe_Name') or v.get('safe_name')}",
+        f"doc: {v.get('Doc') or v.get('doc') or ''}".strip(),
+        f"projects columns: {summarize_list(cols)}" if cols else "",
+        f"reads tables: {summarize_list(read_names)}" if read_names else ""
+    ]
+    return "\n".join([p for p in parts if p])
 
-def as_text_for_proc(name, p):
-    schema = p.get("Schema") or p.get("schema") or "dbo"
-    params = p.get("Params") or p.get("params") or []
+def build_proc_text(p: Dict[str, Any]) -> str:
     reads = p.get("Reads") or p.get("reads") or []
     writes = p.get("Writes") or p.get("writes") or []
     calls = p.get("Calls") or p.get("calls") or []
-    access = p.get("Access") or ("read" if not writes else "write")
-    prm_str = ", ".join([f"@{prm.get('Name') or prm.get('name')} {prm.get('Type') or prm.get('type')}" for prm in params]) or "(no params)"
-    r_str = ", ".join([f"{(r.get('schema') or r.get('Schema') or 'dbo')}.{r.get('name') or r.get('Name')}" for r in reads]) or "none"
-    w_str = ", ".join([f"{(w.get('schema') or w.get('Schema') or 'dbo')}.{w.get('name') or w.get('Name')}" for w in writes]) or "none"
-    c_str = ", ".join([f"{(c.get('schema') or c.get('Schema') or 'dbo')}.{c.get('name') or c.get('Name')}" for c in calls]) or "none"
-    return f"PROC {schema}.{name} [{access}]. Params: {prm_str}. Reads: {r_str}. Writes: {w_str}. Calls: {c_str}."
+    colrefs = p.get("Column_Refs") or p.get("column_refs") or {}
 
-def as_text_for_func(name, f):
-    schema = f.get("Schema") or f.get("schema") or "dbo"
-    params = f.get("Params") or f.get("params") or []
-    reads = f.get("Reads") or f.get("reads") or []
-    writes = f.get("Writes") or f.get("writes") or []
-    calls = f.get("Calls") or f.get("calls") or []
-    access = f.get("Access") or ("read" if not writes else "write")
-    prm_str = ", ".join([f"@{prm.get('Name') or prm.get('name')} {prm.get('Type') or prm.get('type')}" for prm in params]) or "(no params)"
-    r_str = ", ".join([f"{(r.get('schema') or r.get('Schema') or 'dbo')}.{r.get('name') or r.get('Name')}" for r in reads]) or "none"
-    w_str = ", ".join([f"{(w.get('schema') or w.get('Schema') or 'dbo')}.{w.get('name') or w.get('Name')}" for w in writes]) or "none"
-    c_str = ", ".join([f"{(c.get('schema') or c.get('Schema') or 'dbo')}.{c.get('name') or c.get('Name')}" for c in calls]) or "none"
-    return f"FUNC {schema}.{name} [{access}]. Params: {prm_str}. Reads: {r_str}. Writes: {w_str}. Calls: {c_str}."
+    def names(lst):
+        out = []
+        for r in lst:
+            out.append(r.get("Safe_Name") or r.get("safe_name") or safe_join(r.get("Schema") or r.get("schema"), r.get("Name") or r.get("name")))
+        return out
 
-def build_documents(cat):
-    docs = []
-    # Tables
-    for safe_key, t in (cat.get("Tables") or cat.get("tables") or {}).items():
-        text = as_text_for_table(safe_key, t)
-        docs.append({
-            "id": f"table::{(t.get('Schema') or t.get('schema') or 'dbo')}.{t.get('Original_Name') or t.get('original_name') or safe_key}",
-            "kind": "table",
-            "schema": t.get("Schema") or t.get("schema") or "dbo",
-            "name": t.get("Original_Name") or t.get("original_name") or safe_key,
-            "safe_name": t.get("Safe_Name") or t.get("safe_name") or safe_key,
-            "text": text
-        })
-    # Views
-    for vname, v in (cat.get("Views") or cat.get("views") or {}).items():
-        text = as_text_for_view(vname, v)
-        docs.append({
-            "id": f"view::{(v.get('Schema') or v.get('schema') or 'dbo')}.{vname}",
-            "kind": "view",
-            "schema": v.get("Schema") or v.get("schema") or "dbo",
-            "name": vname,
-            "safe_name": vname,
-            "text": text
-        })
-    # Procedures
-    for pname, p in (cat.get("Procedures") or cat.get("procedures") or {}).items():
-        text = as_text_for_proc(pname, p)
-        docs.append({
-            "id": f"proc::{(p.get('Schema') or p.get('schema') or 'dbo')}.{pname}",
-            "kind": "procedure",
-            "schema": p.get("Schema") or p.get("schema") or "dbo",
-            "name": pname,
-            "safe_name": pname,
-            "access": p.get("Access") or ("read" if not p.get('Writes') and not p.get('writes') else "write"),
-            "text": text
-        })
-    # Functions
-    for fname, fobj in (cat.get("Functions") or cat.get("functions") or {}).items():
-        text = as_text_for_func(fname, fobj)
-        f_schema = fobj.get("Schema") or fobj.get("schema") or "dbo"
-        access = fobj.get("Access") or ("read" if not fobj.get('Writes') and not fobj.get('writes') else "write")
-        docs.append({
-            "id": f"func::{f_schema}.{fname}",
-            "kind": "function",
-            "schema": f_schema,
-            "name": fname,
-            "safe_name": fname,
-            "access": access,
-            "text": text
-        })
-    return docs
+    colref_lines = []
+    for tbl, cols in colrefs.items():
+        if isinstance(cols, (list, tuple, set)):
+            colref_lines.append(f"- {tbl}: {summarize_list(sorted(list(cols)))}")
+        else:
+            colref_lines.append(f"- {tbl}: {cols}")
 
-# ---------- Embeddings ----------
-def embed_with_lmstudio(texts):
-    import requests
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    data = {"model": EMBED_MODEL, "input": texts}
-    r = requests.post(f"{BASE_URL}/embeddings", headers=headers, json=data, timeout=600)
-    r.raise_for_status()
-    out = r.json()
-    if "data" not in out or not out["data"]:
-        raise RuntimeError(f"LM Studio returned no embeddings. Response: {out}")
-    return [d["embedding"] for d in out["data"]]
+    parts = [
+        f"PROCEDURE {p.get('schema','')}.{p.get('Original_Name') or p.get('original_name') or p.get('name','')}".strip("."),
+        f"safe: {p.get('Safe_Name') or p.get('safe_name')}",
+        f"doc: {p.get('Doc') or p.get('doc') or ''}".strip(),
+        f"reads: {summarize_list(names(reads))}" if reads else "",
+        f"writes: {summarize_list(names(writes))}" if writes else "",
+        f"calls: {summarize_list(names(calls))}" if calls else "",
+        "column refs:" if colrefs else "",
+        *colref_lines
+    ]
+    return "\n".join([p for p in parts if p])
 
-def embed_with_st(texts):
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(os.environ.get("ST_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
-    return model.encode(texts, batch_size=32, convert_to_numpy=True, show_progress_bar=True, normalize_embeddings=True).tolist()
+def build_function_text(name_safe: str, sql: Optional[str]) -> str:
+    return f"FUNCTION {name_safe}\n" + (f"sql:\n{sql}" if sql else "")
 
-def batched(seq, n=64):
-    for i in range(0, len(seq), n):
-        yield seq[i:i+n]
+# ------------------------------ Index building ------------------------------
 
 def main():
-    Path(INDEX_DIR).mkdir(parents=True, exist_ok=True)
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    if not CATALOG_PATH.exists():
+        print(f"❗ catalog.json not found at {CATALOG_PATH}", file=sys.stderr)
+        sys.exit(2)
 
-    # BOM-safe read
-    with open(CATALOG_PATH, encoding="utf-8-sig") as f:
-        root = json.load(f)
-    catalog_obj = root.get("Catalog") or root   # supports both the .NET export wrapper or plain catalog
+    cat = read_json(CATALOG_PATH)
 
-    docs = build_documents(catalog_obj)
-    if not docs:
-        print("No documents found in catalog.")
-        return
+    items: List[Dict[str, Any]] = []
+    sql_entities: List[Dict[str, Any]] = []
 
-    # Compute embeddings
-    texts = [d["text"] for d in docs]
-    embeddings = []
-    if USE_LMSTUDIO:
-        print(f"Using LM Studio embeddings @ {BASE_URL} model={EMBED_MODEL}")
-        # warm-up to detect dim
-        warm = embed_with_lmstudio(["__dim_probe__"])[0]
-        dim = len(warm)
-        print(f"Detected embedding dimension: {dim}")
-        # batch the rest including the probe separately
-        for chunk in batched(texts, 64):
-            embeddings.extend(embed_with_lmstudio(chunk))
-    else:
-        print("Using sentence-transformers fallback (CPU).")
-        veclist = embed_with_st(texts)
-        dim = len(veclist[0]) if veclist else 0
-        embeddings = veclist
+    # ---- Tables ----
+    for safe_name, t in (cat.get("Tables") or cat.get("tables") or {}).items():
+        schema = t.get("Schema") or t.get("schema") or ""
+        original = t.get("Original_Name") or t.get("original_name") or ""
+        doc = t.get("Doc") or t.get("doc")
+        is_unused = bool(t.get("Is_Unused") or t.get("is_unused") or False)
 
-    import numpy as np
-    embs = np.array(embeddings, dtype="float32")
-    # Normalize for cosine similarity
-    embs = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12)
+        sql_path, sql_text = load_sql_export("tables", safe_name)
+        text = build_table_text(t)
+        if doc:
+            text += f"\nnotes: {doc}"
+        if is_unused:
+            text += "\nstatus: unused, unaccessed, not referenced by views or procedures"
 
-    # Save index
-    np.save(os.path.join(INDEX_DIR, "embeddings.npy"), embs)
-    with open(os.path.join(INDEX_DIR, "items.json"), "w", encoding="utf-8") as f:
-        json.dump(docs, f, ensure_ascii=False, indent=2)
-    with open(os.path.join(INDEX_DIR, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump({"model": EMBED_MODEL, "use_lmstudio": USE_LMSTUDIO, "dim": int(dim)}, f, indent=2)
+        items.append({
+            "id": f"table::{safe_name}",
+            "kind": "table",
+            "schema": schema,
+            "name": original,
+            "safe_name": safe_name,
+            "is_unused": is_unused,
+            "doc": doc,
+            "text": text,
+            "sql": sql_text,
+            "sql_path": sql_path
+        })
 
-    print(f"✅ Indexed {len(docs)} objects (dim={dim}) → {INDEX_DIR}/embeddings.npy + items.json + meta.json")
+        # Add one item per COLUMN
+        columns = t.get("Columns") or t.get("columns") or {}
+        for col_name, cinfo in columns.items():
+            # Determine referenced_in with either case
+            ref_in = cinfo.get("Referenced_In") if "Referenced_In" in cinfo else cinfo.get("referenced_in", [])
+            col_unused = not bool(ref_in)
+
+            typ = cinfo.get("type") or cinfo.get("Type")
+            nullable = cinfo.get("nullable") if "nullable" in cinfo else cinfo.get("Nullable")
+            default = cinfo.get("default") if "default" in cinfo else cinfo.get("Default")
+            cdoc = cinfo.get("doc") if "doc" in cinfo else cinfo.get("Doc")
+
+            col_text = f"COLUMN {schema}.{original}.{col_name}\n"
+            col_text += f"type: {typ}, {'nullable' if nullable else 'not null'}"
+            if default:
+                col_text += f", default: {default}"
+            if cdoc:
+                col_text += f"\nnotes: {cdoc}"
+            if col_unused:
+                col_text += "\nstatus: unused, unaccessed, not referenced by any view or procedure"
+
+            items.append({
+                "id": f"column::{safe_name}.{col_name}",
+                "kind": "column",
+                "schema": schema,
+                "table": original,
+                "name": col_name,
+                "safe_table": safe_name,
+                "is_unused": col_unused,
+                "doc": cdoc,
+                "text": col_text,
+                "sql": sql_text,
+                "sql_path": sql_path
+            })
+
+        if sql_text is not None:
+            sql_entities.append({
+                "kind": "table", "safe_name": safe_name, "schema": schema, "name": original,
+                "sql_path": sql_path, "sql": sql_text
+            })
+
+    # ---- Views ----
+    for safe_name, v in (cat.get("Views") or cat.get("views") or {}).items():
+        schema = v.get("Schema") or v.get("schema") or ""
+        original = v.get("Original_Name") or v.get("original_name") or ""
+        sql_path, sql_text = load_sql_export("views", safe_name)
+        text = build_view_text(v)
+        items.append({
+            "id": f"view::{safe_name}",
+            "kind": "view",
+            "schema": schema,
+            "name": original,
+            "safe_name": safe_name,
+            "doc": v.get("Doc") or v.get("doc"),
+            "text": text,
+            "sql": sql_text,
+            "sql_path": sql_path
+        })
+        if sql_text is not None:
+            sql_entities.append({
+                "kind": "view", "safe_name": safe_name, "schema": schema, "name": original,
+                "sql_path": sql_path, "sql": sql_text
+            })
+
+    # ---- Procedures ----
+    for safe_name, p in (cat.get("Procedures") or cat.get("procedures") or {}).items():
+        schema = p.get("Schema") or p.get("schema") or ""
+        original = p.get("Original_Name") or p.get("original_name") or ""
+        sql_path, sql_text = load_sql_export("procedures", safe_name)
+        text = build_proc_text(p)
+        items.append({
+            "id": f"procedure::{safe_name}",
+            "kind": "procedure",
+            "schema": schema,
+            "name": original,
+            "safe_name": safe_name,
+            "doc": p.get("Doc") or p.get("doc"),
+            "text": text,
+            "sql": sql_text,
+            "sql_path": sql_path
+        })
+        if sql_text is not None:
+            sql_entities.append({
+                "kind": "procedure", "safe_name": safe_name, "schema": schema, "name": original,
+                "sql_path": sql_path, "sql": sql_text
+            })
+
+    # ---- Functions (discover via exports; catalog may not include them) ----
+    func_dir = EXPORTS_DIR / "functions"
+    if func_dir.exists():
+        for pth in sorted(func_dir.glob("*.sql")):
+            safe_name = pth.stem
+            sql_text = try_read(pth)
+            schema = safe_name.split("·")[0] if "·" in safe_name else ""
+            name    = safe_name.split("·")[1] if "·" in safe_name else safe_name
+            items.append({
+                "id": f"function::{safe_name}",
+                "kind": "function",
+                "schema": schema,
+                "name": name,
+                "safe_name": safe_name,
+                "doc": None,
+                "text": build_function_text(safe_name, None),
+                "sql": sql_text,
+                "sql_path": str(pth)
+            })
+            if sql_text is not None:
+                sql_entities.append({
+                    "kind": "function", "safe_name": safe_name, "schema": schema, "name": name,
+                    "sql_path": str(pth), "sql": sql_text
+                })
+
+    # ---- Also add explicit UNUSED lists from catalog ----
+    for safe_name in cat.get("Unused_Tables") or cat.get("unused_tables") or []:
+        if not any(it["id"] == f"table::{safe_name}" for it in items):
+            sql_path, sql_text = load_sql_export("tables", safe_name)
+            schema = safe_name.split("·")[0] if "·" in safe_name else ""
+            name   = safe_name.split("·")[1] if "·" in safe_name else safe_name
+            text = f"TABLE {schema}.{name}\nsafe: {safe_name}\nstatus: unused, unaccessed, not referenced"
+            items.append({
+                "id": f"table::{safe_name}",
+                "kind": "table",
+                "schema": schema,
+                "name": name,
+                "safe_name": safe_name,
+                "is_unused": True,
+                "doc": None,
+                "text": text,
+                "sql": sql_text,
+                "sql_path": sql_path
+            })
+
+    for uc in cat.get("Unused_Columns") or cat.get("unused_columns") or []:
+        if isinstance(uc, dict):
+            safe_table = uc.get("Table") or uc.get("table")
+            col_name   = uc.get("Column") or uc.get("column")
+        elif isinstance(uc, (list, tuple)) and len(uc) >= 2:
+            safe_table, col_name = uc[0], uc[1]
+        else:
+            continue
+        if not safe_table or not col_name:
+            continue
+        sql_path, sql_text = load_sql_export("tables", safe_table)
+        schema = safe_table.split("·")[0] if "·" in safe_table else ""
+        table  = safe_table.split("·")[1] if "·" in safe_table else safe_table
+        text = f"COLUMN {schema}.{table}.{col_name}\nsafe table: {safe_table}\nstatus: unused, unaccessed, not referenced"
+        items.append({
+            "id": f"column::{safe_table}.{col_name}",
+            "kind": "column",
+            "schema": schema,
+            "table": table,
+            "name": col_name,
+            "safe_table": safe_table,
+            "is_unused": True,
+            "doc": None,
+            "text": text,
+            "sql": sql_text,
+            "sql_path": sql_path
+        })
+
+    # ---- Write the SQL entity list (for “listing the SQL creation of entities”) ----
+    SQL_LIST_PATH.write_text(json.dumps(sql_entities, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ---- Build embeddings ----
+    texts = [it["text"] for it in items]
+    print(f"[vectorize_catalog] Embedding {len(texts)} items using "
+          f"{'LM Studio '+EMBED_MODEL if USE_LMSTUDIO else 'sentence-transformers'}")
+    emb = embed_texts(texts, EMBED_MODEL)
+    dim = int(emb.shape[1])
+
+    # ---- Save artifacts ----
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    np.save(INDEX_DIR / "embeddings.npy", emb)
+
+    with (INDEX_DIR / "items.json").open("w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+    meta = {
+        "model": EMBED_MODEL if USE_LMSTUDIO else os.getenv("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+        "provider": "lmstudio" if USE_LMSTUDIO else "sentence-transformers",
+        "dimension": dim,
+        "count": len(items),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+        "catalog_path": str(CATALOG_PATH),
+        "exports_dir": str(EXPORTS_DIR),
+        "index_dir": str(INDEX_DIR)
+    }
+    (INDEX_DIR / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"[vectorize_catalog] Wrote: {INDEX_DIR/'embeddings.npy'}")
+    print(f"[vectorize_catalog] Wrote: {INDEX_DIR/'items.json'}")
+    print(f"[vectorize_catalog] Wrote: {INDEX_DIR/'meta.json'}")
+    print(f"[vectorize_catalog] Wrote: {SQL_LIST_PATH} (entity SQL listing)")
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,7 @@
 # rag_chat.py
 import os, json, numpy as np, textwrap, requests
 
-INDEX_DIR = "./output/vector_index"
+INDEX_DIR = "../output/vector_index"
 
 # Embedding server/model (LM Studio)
 EMBED_BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")

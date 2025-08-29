@@ -1,3 +1,7 @@
+# Project folder
+sql_files/
+output/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -209,3 +213,7 @@ __marimo__/
 
 # chatgpt
 state.json
+
+# C#
+bin/
+obj/

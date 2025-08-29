@@ -1,116 +1,117 @@
-﻿using System.Text;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp;
-
-internal class Program
+namespace SqlCatalogApp
 {
-    static void Main()
+    internal static class Program
     {
-        Directory.CreateDirectory(Config.OutputDir);
-
-        var parser = Helpers.CreateBestParser(initialQuotedIdentifiers: true);
-        var catalog = new Catalog();
-
-        var tableVisitor = new TableVisitor(catalog);
-        var viewVisitor  = new ViewVisitor(catalog);
-        var pfVisitor    = new ProcFuncVisitor(catalog);
-
-        foreach (var path in Directory.GetFiles(Config.SqlDir, "*.sql", SearchOption.TopDirectoryOnly))
+        static int Main(string[] args)
         {
-            Console.WriteLine($"Processing: {Path.GetFileName(path)}");
-
-            IList<ParseError> errors;
-            using (var reader = new StreamReader(path, Encoding.UTF8))
+            try
             {
-                var fragment = parser.Parse(reader, out errors);
+                var sqlRoot = Helpers.ResolveSqlRoot();          // ../sql_files by default
+                var outDir  = Helpers.ResolveOutputRoot();       // ../output by default
+                var outPath = Path.Combine(outDir, "catalog.json");
 
-                // Walk with specialized visitors
-                fragment.Accept(tableVisitor);
-                fragment.Accept(viewVisitor);
-                fragment.Accept(pfVisitor);
+                Directory.CreateDirectory(outDir);
+
+                var files = Directory.Exists(sqlRoot)
+                    ? Directory.EnumerateFiles(sqlRoot, "*.sql", SearchOption.AllDirectories).ToList()
+                    : new List<string>();
+
+                Console.WriteLine($"[SqlCatalog] Using SQL root: {Path.GetFullPath(sqlRoot)}");
+                Console.WriteLine($"[SqlCatalog] Found {files.Count} .sql files");
+                Console.WriteLine($"[SqlCatalog] Output dir: {Path.GetFullPath(outDir)}");
+
+                var cat = new Catalog();
+
+                foreach (var file in files)
+                {
+                    var text = File.ReadAllText(file);
+                    var parser = new TSql150Parser(initialQuotedIdentifiers: true);
+                    IList<ParseError> errors;
+                    var fragment = parser.Parse(new StringReader(text), out errors);
+
+                    if (errors is { Count: > 0 })
+                    {
+                        Console.Error.WriteLine($"[WARN] Parse errors in {file} : {errors.Count}");
+                        foreach (var e in errors.Take(3))
+                            Console.Error.WriteLine($"  L{e.Line},{e.Column}: {e.Message}");
+                    }
+
+                    // Your existing + new visitors
+                    var tv = new TableVisitor(cat);     // your class
+                    var vv = new ViewVisitor(cat);      // ours
+                    var pv = new ProcFuncVisitor(cat);  // ours
+                    var xv = new ExportSqlVisitor();    // re-export .sql files
+
+                    fragment.Accept(tv);
+                    fragment.Accept(vv);
+                    fragment.Accept(pv);
+                    fragment.Accept(xv);
+                }
+
+                // ---------- Post-pass: propagate usage ----------
+                foreach (var p in cat.Procedures.Values)
+                {
+                    foreach (var r in p.Reads.Concat(p.Writes))
+                        if (cat.Tables.TryGetValue(r.Safe_Name, out var t))
+                            t.Referenced_By.Add(new ObjRef(p.Schema, p.Safe_Name));
+
+                    foreach (var kv in p.Column_Refs)
+                    {
+                        if (!cat.Tables.TryGetValue(kv.Key, out var t)) continue;
+                        foreach (var col in kv.Value)
+                            if (t.Columns.TryGetValue(col, out var ci))
+                                ci.Referenced_In.Add(new UsageRef("procedure", p.Safe_Name, "unknown"));
+                    }
+                }
+
+                foreach (var v in cat.Views.Values)
+                {
+                    foreach (var r in v.Reads)
+                        if (cat.Tables.TryGetValue(r.Safe_Name, out var t))
+                            t.Referenced_By.Add(new ObjRef(v.Schema, v.Safe_Name));
+
+                    if (v.Columns.Count > 0 && v.Reads.Count == 1)
+                    {
+                        var baseSafe = v.Reads[0].Safe_Name;
+                        if (cat.Tables.TryGetValue(baseSafe, out var t))
+                        {
+                            foreach (var c in v.Columns.Where(cn => cn != "*"))
+                                if (t.Columns.TryGetValue(c, out var ci))
+                                    ci.Referenced_In.Add(new UsageRef("view", v.Safe_Name, "select"));
+                        }
+                    }
+                }
+
+                // ---------- Unused ----------
+                foreach (var t in cat.Tables.Values)
+                {
+                    t.Is_Unused = t.Referenced_By.Count == 0;
+                    if (t.Is_Unused) cat.Unused_Tables.Add(t.Safe_Name);
+
+                    foreach (var kv in t.Columns)
+                        if (kv.Value.Referenced_In.Count == 0)
+                            cat.Unused_Columns.Add(new UnusedColumn(t.Safe_Name, kv.Key));
+                }
+
+                // ---------- Save ----------
+                var json = JsonSerializer.Serialize(cat, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(outPath, json);
+                Console.WriteLine($"[SqlCatalog] Wrote: {Path.GetFullPath(outPath)}");
+                Console.WriteLine($"[SqlCatalog] Tables={cat.Tables.Count}, Views={cat.Views.Count}, Procs={cat.Procedures.Count}");
+                return 0;
             }
-
-            if (errors?.Count > 0)
+            catch (Exception ex)
             {
-                foreach (var e in errors.Take(5))
-                    Console.WriteLine($"  ⚠ L{e.Line}:{e.Column} {e.Message}");
-                if (errors.Count > 5) Console.WriteLine($"  ... {errors.Count - 5} more");
+                Console.Error.WriteLine(ex);
+                return 1;
             }
         }
-
-        // ---------- Build schema-based clustering index ----------
-        var schemaIndex = new Dictionary<string, SchemaGroup>(StringComparer.OrdinalIgnoreCase);
-
-        // Tables (use safe key for IDs)
-        foreach (var (safeKey, t) in catalog.Tables)
-        {
-            var schema = t.Schema ?? "dbo";
-            if (!schemaIndex.TryGetValue(schema, out var grp))
-                schemaIndex[schema] = grp = new SchemaGroup();
-
-            grp.Tables.Add(safeKey);
-        }
-
-        // Views
-        foreach (var (name, v) in catalog.Views)
-        {
-            var schema = v.Schema ?? "dbo";
-            if (!schemaIndex.TryGetValue(schema, out var grp))
-                schemaIndex[schema] = grp = new SchemaGroup();
-
-            grp.Views.Add(name);
-        }
-
-        // Procedures (split by Access)
-        foreach (var (name, p) in catalog.Procedures)
-        {
-            var schema = p.Schema ?? "dbo";
-            if (!schemaIndex.TryGetValue(schema, out var grp))
-                schemaIndex[schema] = grp = new SchemaGroup();
-
-            if (p.Access == "read") grp.Procedures_Read.Add(name);
-            else grp.Procedures_Write.Add(name);
-        }
-
-        // Functions (split by Access)
-        foreach (var (name, f) in catalog.Functions)
-        {
-            var schema = f.Schema ?? "dbo";
-            if (!schemaIndex.TryGetValue(schema, out var grp))
-                schemaIndex[schema] = grp = new SchemaGroup();
-
-            if (f.Access == "read") grp.Functions_Read.Add(name);
-            else grp.Functions_Write.Add(name);
-        }
-
-        // Sort lists for consistency
-        foreach (var grp in schemaIndex.Values)
-        {
-            grp.Tables.Sort(StringComparer.OrdinalIgnoreCase);
-            grp.Views.Sort(StringComparer.OrdinalIgnoreCase);
-            grp.Procedures_Read.Sort(StringComparer.OrdinalIgnoreCase);
-            grp.Procedures_Write.Sort(StringComparer.OrdinalIgnoreCase);
-            grp.Functions_Read.Sort(StringComparer.OrdinalIgnoreCase);
-            grp.Functions_Write.Sort(StringComparer.OrdinalIgnoreCase);
-        }
-
-        // ---------- Export combined object ----------
-        var export = new CatalogExport
-        {
-            Catalog = catalog,
-            Schema_Index = schemaIndex
-        };
-
-        var json = JsonSerializer.Serialize(export, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        });
-        File.WriteAllText(Config.CatalogPath, json, Encoding.UTF8);
-
-        Console.WriteLine($"\n✅ Catalog exported to {Config.CatalogPath}");
     }
 }

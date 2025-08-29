@@ -1,102 +1,102 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp;
-
-internal sealed class ProcFuncVisitor : TSqlFragmentVisitor
+namespace SqlCatalogApp
 {
-    private readonly Catalog _catalog;
-    public ProcFuncVisitor(Catalog catalog) => _catalog = catalog;
-
-    public override void ExplicitVisit(CreateProcedureStatement node)
+    internal sealed class ProcFuncVisitor : TSqlFragmentVisitor
     {
-        var (schema, name, _) = Helpers.NameOf(node.ProcedureReference.Name);
-        if (!_catalog.Procedures.TryGetValue(name, out var p))
+        private readonly Catalog _cat;
+
+        public ProcFuncVisitor(Catalog cat) => _cat = cat;
+
+        public override void ExplicitVisit(CreateProcedureStatement node)
         {
-            p = new ProcedureInfo { Schema = schema };
-            _catalog.Procedures[name] = p;
-        }
-
-        // Params
-        foreach (var prm in node.Parameters)
-        {
-            var pname = prm.VariableName?.Value?.TrimStart('@') ?? "";
-            var ptype = prm.DataType is null ? "" : Helpers.SqlDataTypeToString(prm.DataType);
-            p.Params.Add(new ParamInfo(pname, ptype));
-        }
-
-        var seenR = new HashSet<string>();
-        var seenW = new HashSet<string>();
-        var seenC = new HashSet<string>();
-
-        foreach (var nt in node.GetDescendants<NamedTableReference>())
-            Helpers.AddRead(seenR, p.Reads, nt.SchemaObject);
-
-        foreach (var ins in node.GetDescendants<InsertStatement>())
-            Helpers.AddTargetWrite(ins.InsertSpecification?.Target, p.Writes, seenW);
-
-        foreach (var up in node.GetDescendants<UpdateStatement>())
-            Helpers.AddTargetWrite(up.UpdateSpecification?.Target, p.Writes, seenW);
-
-        foreach (var del in node.GetDescendants<DeleteStatement>())
-            Helpers.AddTargetWrite(del.DeleteSpecification?.Target, p.Writes, seenW);
-
-        // MERGE targets omitted for cross-version compatibility
-
-        foreach (var exec in node.GetDescendants<ExecuteSpecification>())
-        {
-            var sobj = (exec.ExecutableEntity as ExecutableProcedureReference)
-                       ?.ProcedureReference?.ProcedureReference?.Name;
-            if (sobj?.BaseIdentifier != null)
+            var (schema, name, safe) = Helpers.NameOf(node.ProcedureReference.Name);
+            if (!_cat.Procedures.TryGetValue(safe, out var p))
             {
-                var (ss, on, _) = Helpers.NameOf(sobj);
-                var key = (ss ?? "") + "|" + on;
-                if (seenC.Add(key)) p.Calls.Add(new ObjRef(ss, on));
+                p = new ProcedureInfo
+                {
+                    Schema = schema,
+                    Original_Name = name,
+                    Safe_Name = safe
+                };
+                _cat.Procedures[safe] = p;
             }
-        }
-    }
 
-    public override void ExplicitVisit(CreateFunctionStatement node)
-    {
-        var (schema, name, _) = Helpers.NameOf(node.Name);
-        if (!_catalog.Functions.TryGetValue(name, out var f))
-        {
-            f = new FunctionInfo { Schema = schema };
-            _catalog.Functions[name] = f;
-        }
-
-        foreach (var prm in node.Parameters)
-        {
-            var pname = prm.VariableName?.Value?.TrimStart('@') ?? "";
-            var ptype = prm.DataType is null ? "" : Helpers.SqlDataTypeToString(prm.DataType);
-            f.Params.Add(new ParamInfo(pname, ptype));
-        }
-
-        var seenR = new HashSet<string>();
-        var seenW = new HashSet<string>();
-        var seenC = new HashSet<string>();
-
-        foreach (var nt in node.GetDescendants<NamedTableReference>())
-            Helpers.AddRead(seenR, f.Reads, nt.SchemaObject);
-
-        foreach (var ins in node.GetDescendants<InsertStatement>())
-            Helpers.AddTargetWrite(ins.InsertSpecification?.Target, f.Writes, seenW);
-
-        foreach (var up in node.GetDescendants<UpdateStatement>())
-            Helpers.AddTargetWrite(up.UpdateSpecification?.Target, f.Writes, seenW);
-
-        foreach (var del in node.GetDescendants<DeleteStatement>())
-            Helpers.AddTargetWrite(del.DeleteSpecification?.Target, f.Writes, seenW);
-
-        foreach (var exec in node.GetDescendants<ExecuteSpecification>())
-        {
-            var sobj = (exec.ExecutableEntity as ExecutableProcedureReference)
-                       ?.ProcedureReference?.ProcedureReference?.Name;
-            if (sobj?.BaseIdentifier != null)
+            // Params
+            foreach (var prm in node.Parameters)
             {
-                var (ss, on, _) = Helpers.NameOf(sobj);
-                var key = (ss ?? "") + "|" + on;
-                if (seenC.Add(key)) f.Calls.Add(new ObjRef(ss, on));
+                var pname = prm.VariableName?.Value;
+                if (!string.IsNullOrWhiteSpace(pname))
+                    p.Params.Add(pname!);
             }
+
+            var seenR = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenW = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Reads
+            foreach (var nt in DomExtensions.GetDescendants<NamedTableReference>(node))
+                Helpers.AddRead(seenR, p.Reads, nt.SchemaObject);
+
+            // Writes: INSERT / UPDATE / DELETE
+            foreach (var ins in DomExtensions.GetDescendants<InsertStatement>(node))
+                Helpers.AddTargetWrite(ins.InsertSpecification?.Target, p.Writes, seenW);
+
+            foreach (var upd in DomExtensions.GetDescendants<UpdateStatement>(node))
+                Helpers.AddTargetWrite(upd.UpdateSpecification?.Target, p.Writes, seenW);
+
+            foreach (var del in DomExtensions.GetDescendants<DeleteStatement>(node))
+                Helpers.AddTargetWrite(del.DeleteSpecification?.Target, p.Writes, seenW);
+
+            // Calls (EXEC ...)
+            foreach (var ex in DomExtensions.GetDescendants<ExecuteStatement>(node))
+            {
+                var pref = ex.ExecuteSpecification?.ExecutableEntity as ExecutableProcedureReference;
+                var pr = pref?.ProcedureReference?.ProcedureReference;
+                if (pr?.Name != null)
+                {
+                    var (_, _, safeCall) = Helpers.NameOf(pr.Name);
+                    p.Calls.Add(new ObjRef(null, safeCall));
+                }
+            }
+
+            // Column references (best-effort)
+            foreach (var cref in DomExtensions.GetDescendants<ColumnReferenceExpression>(node))
+            {
+                var ids = cref.MultiPartIdentifier?.Identifiers;
+                if (ids == null || ids.Count == 0) continue;
+
+                string? schemaName = null;
+                string? tableName = null;
+                string? colName;
+
+                if (ids.Count >= 3)
+                {
+                    schemaName = ids[^3].Value;
+                    tableName  = ids[^2].Value;
+                    colName    = ids[^1].Value;
+                }
+                else if (ids.Count == 2)
+                {
+                    tableName = ids[0].Value;
+                    colName   = ids[1].Value;
+                }
+                else
+                {
+                    continue; // unqualified; skip without deep binding
+                }
+
+                if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(colName))
+                    continue;
+
+                var safeTbl = Helpers.SafeTableKey(schemaName, tableName);
+                Helpers.AddColumnRef(p.Column_Refs, safeTbl, colName);
+            }
+
+            // Header doc
+            p.Doc ??= Helpers.ExtractHeaderDoc(Helpers.ScriptFragment(node));
         }
     }
 }
