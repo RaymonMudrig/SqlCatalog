@@ -2,11 +2,9 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace SqlCatalog
 {
-    internal sealed class ProcFuncVisitor : TSqlFragmentVisitor
+    internal sealed class ProcFuncVisitor(Catalog cat) : TSqlFragmentVisitor
     {
-        private readonly Catalog _cat;
-
-        public ProcFuncVisitor(Catalog cat) => _cat = cat;
+        private readonly Catalog _cat = cat;
 
         public override void ExplicitVisit(CreateProcedureStatement node)
         {

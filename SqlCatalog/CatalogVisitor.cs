@@ -3,16 +3,10 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace SqlCatalog
 {
-    internal sealed class CatalogVisitor : TSqlFragmentVisitor
+    internal sealed class CatalogVisitor(Catalog cat, string fileSql) : TSqlFragmentVisitor
     {
-        private readonly Catalog _cat;
-        private readonly string _fileSql;
-
-        public CatalogVisitor(Catalog cat, string fileSql)
-        {
-            _cat = cat;
-            _fileSql = fileSql;
-        }
+        private readonly Catalog _cat = cat;
+        private readonly string _fileSql = fileSql;
 
         public override void ExplicitVisit(CreateTableStatement node)
         {
@@ -46,7 +40,7 @@ namespace SqlCatalog
 
                 string? colDoc = null;
                 var maybeLine = lines.FirstOrDefault(l =>
-                    l.IndexOf(cn, StringComparison.OrdinalIgnoreCase) >= 0);
+                    l.Contains(cn, StringComparison.OrdinalIgnoreCase));
                 if (maybeLine != null) colDoc = Helpers.ExtractColumnTrailingDoc(maybeLine);
 
                 t.Columns[cn] = new ColumnInfo(type, nullable, defVal, colDoc);
@@ -94,7 +88,7 @@ namespace SqlCatalog
                                    .Where(x => !string.IsNullOrWhiteSpace(x))
                                    .ToList() ?? new List<string>();
             if (!t.Indexes.TryGetValue(idxName, out var list))
-                t.Indexes[idxName] = list = new List<string>();
+                t.Indexes[idxName] = list = [];
             list.AddRange(cols);
         }
     }

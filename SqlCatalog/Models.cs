@@ -12,8 +12,8 @@ namespace SqlCatalog
             new Dictionary<string, ProcedureInfo>(StringComparer.OrdinalIgnoreCase);
 
         // Computed at the end of Program.cs
-        public List<string> Unused_Tables { get; } = new List<string>();
-        public List<UnusedColumn> Unused_Columns { get; } = new List<UnusedColumn>();
+        public List<string> Unused_Tables { get; } = [];
+        public List<UnusedColumn> Unused_Columns { get; } = [];
     }
 
     public sealed class TableInfo
@@ -26,20 +26,20 @@ namespace SqlCatalog
         public Dictionary<string, ColumnInfo> Columns { get; } =
             new Dictionary<string, ColumnInfo>(StringComparer.OrdinalIgnoreCase);
 
-        public List<string> Primary_Key { get; } = new List<string>();
+        public List<string> Primary_Key { get; } = [];
 
-        public List<ForeignKeyRef> Foreign_Keys { get; } = new List<ForeignKeyRef>();
+        public List<ForeignKeyRef> Foreign_Keys { get; } = [];
 
         public Dictionary<string, List<string>> Indexes { get; } =
             new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-        public List<ObjRef> Referenced_By { get; } = new List<ObjRef>(); // who reads/writes this table
+        public List<ObjRef> Referenced_By { get; } = []; // who reads/writes this table
         public bool Is_Unused { get; set; }
     }
 
     public sealed record ColumnInfo(string Type, bool Nullable, string? Default, string? Doc = null)
     {
-        public List<UsageRef> Referenced_In { get; } = new List<UsageRef>(); // column-level usage
+        public List<UsageRef> Referenced_In { get; } = []; // column-level usage
     }
 
     public sealed class ViewInfo
@@ -48,8 +48,8 @@ namespace SqlCatalog
         public string Original_Name { get; set; } = "";
         public string Safe_Name { get; set; } = "";
 
-        public List<string> Columns { get; } = new List<string>(); // select list (may include "*")
-        public List<ObjRef> Reads { get; } = new List<ObjRef>();    // tables it reads
+        public List<string> Columns { get; } = []; // select list (may include "*")
+        public List<ObjRef> Reads { get; } = [];    // tables it reads
         public string? Doc { get; set; }
     }
 
@@ -59,10 +59,10 @@ namespace SqlCatalog
         public string Original_Name { get; set; } = "";
         public string Safe_Name { get; set; } = "";
 
-        public List<string> Params { get; } = new List<string>();
-        public List<ObjRef> Reads { get; } = new List<ObjRef>();
-        public List<ObjRef> Writes { get; } = new List<ObjRef>();   // <-- fixed
-        public List<ObjRef> Calls { get; } = new List<ObjRef>();
+        public List<string> Params { get; } = [];
+        public List<ObjRef> Reads { get; } = [];
+        public List<ObjRef> Writes { get; } = [];   // <-- fixed
+        public List<ObjRef> Calls { get; } = [];
 
         // key = safe table ("schema·name"), values = set of column names referenced
         public Dictionary<string, HashSet<string>> Column_Refs { get; } =

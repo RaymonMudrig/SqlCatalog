@@ -2,11 +2,9 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace SqlCatalog
 {
-    internal sealed class ViewVisitor : TSqlFragmentVisitor
+    internal sealed class ViewVisitor(Catalog cat) : TSqlFragmentVisitor
     {
-        private readonly Catalog _cat;
-
-        public ViewVisitor(Catalog cat) => _cat = cat;
+        private readonly Catalog _cat = cat;
 
         public override void ExplicitVisit(CreateViewStatement node)
         {

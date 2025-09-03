@@ -5,6 +5,7 @@ namespace SqlCatalog;
 internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
 {
     private readonly Catalog _catalog = catalog;
+    
     private readonly HashSet<string> _idxSeen = []; // table|indexName
 
     public override void ExplicitVisit(CreateTableStatement node)
