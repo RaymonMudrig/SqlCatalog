@@ -1,10 +1,7 @@
 // SqlCatalog/CatalogVisitor.cs
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp
+namespace SqlCatalog
 {
     internal sealed class CatalogVisitor : TSqlFragmentVisitor
     {

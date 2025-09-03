@@ -1,13 +1,11 @@
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp;
+namespace SqlCatalog;
 
-internal sealed class TableVisitor : TSqlFragmentVisitor
+internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
 {
-    private readonly Catalog _catalog;
-    private readonly HashSet<string> _idxSeen = new(); // table|indexName
-
-    public TableVisitor(Catalog catalog) => _catalog = catalog;
+    private readonly Catalog _catalog = catalog;
+    private readonly HashSet<string> _idxSeen = []; // table|indexName
 
     public override void ExplicitVisit(CreateTableStatement node)
     {

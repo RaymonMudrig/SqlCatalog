@@ -1,6 +1,6 @@
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp;
+namespace SqlCatalog;
 
 internal static class DomExtensions
 {

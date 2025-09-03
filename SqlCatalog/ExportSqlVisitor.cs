@@ -1,7 +1,6 @@
-using System;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-namespace SqlCatalogApp
+namespace SqlCatalog
 {
     /// <summary>
     /// Walks the script and re-exports each entity statement (table/view/proc/function)

@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
-
-namespace SqlCatalogApp
+namespace SqlCatalog
 {
     public sealed class Catalog
     {

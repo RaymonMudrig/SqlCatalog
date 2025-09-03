@@ -1,4 +1,4 @@
-namespace SqlCatalogApp;
+namespace SqlCatalog;
 
 internal static class Config
 {
