@@ -33,8 +33,7 @@ namespace SqlCatalogApp
                 {
                     var text = File.ReadAllText(file);
                     var parser = new TSql150Parser(initialQuotedIdentifiers: true);
-                    IList<ParseError> errors;
-                    var fragment = parser.Parse(new StringReader(text), out errors);
+                    var fragment = parser.Parse(new StringReader(text), out IList<ParseError> errors);
 
                     if (errors is { Count: > 0 })
                     {

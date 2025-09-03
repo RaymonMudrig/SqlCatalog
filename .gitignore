@@ -217,3 +217,5 @@ state.json
 # C#
 bin/
 obj/
+*.sln
+.vs
