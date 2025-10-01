@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pathlib import Path   # <-- this was missing
+from pathlib import Path
 import os
 
 # Directory layout:
@@ -29,3 +29,14 @@ def ensure_dirs() -> None:
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     for sub in ("tables", "views", "procedures", "functions"):
         (OUTPUT_DIR / "sql_exports" / sub).mkdir(parents=True, exist_ok=True)
+
+# Locations used by this tool
+CATALOG_JSON = Path(os.getenv("CATALOG_JSON", str(OUTPUT_DIR / "catalog.json"))).resolve()
+ITEMS_JSON   = Path(os.getenv("ITEMS_JSON",   str(BASE / "items.json"))).resolve()
+
+# Exported SQL paths (produced by the .NET exporter)
+SQL_EXPORTS_DIR = OUTPUT_DIR / "sql_exports"
+SQL_EXPORTS_TABLES     = SQL_EXPORTS_DIR / "tables"
+SQL_EXPORTS_PROCEDURES = SQL_EXPORTS_DIR / "procedures"
+SQL_EXPORTS_VIEWS      = SQL_EXPORTS_DIR / "views"
+SQL_EXPORTS_FUNCTIONS  = SQL_EXPORTS_DIR / "functions"
