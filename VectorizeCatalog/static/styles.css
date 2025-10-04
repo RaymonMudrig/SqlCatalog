@@ -54,12 +54,18 @@ header h1 { margin: 0 0 16px; font-size: 22px; }
 .markdown-body a { color: var(--accent); text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
 
+.diff-view {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
 /* accessibility */
 .sr-only {
   position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
 }
 
-/* larger screens can comfortably go taller by default */
 @media (min-width: 1200px) {
   #prompt { min-height: 200px; }
 }

@@ -3,35 +3,128 @@
 <head>
   <meta charset="utf-8" />
   <title>SQL Catalog QA</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="/static/styles.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/default.min.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Basic styles -->
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    h1 { font-weight: 600; margin-bottom: 12px; }
+    .bar { display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px; }
+    #prompt {
+      flex: 1 1 auto; min-height: 80px; padding: 10px 12px; font-size: 16px;
+      border: 1px solid #ccc; border-radius: 8px; resize: vertical;
+    }
+    button {
+      flex: 0 0 auto; padding: 10px 14px; font-size: 16px; border: none;
+      border-radius: 8px; background: #0b5; color: white; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 1100px) { .row { grid-template-columns: 1fr; } }
+    #answer { padding: 16px; border: 1px solid #eee; border-radius: 10px; }
+    /* Diff area */
+    #diffwrap { display:none; padding: 0; border: 1px solid #eee; border-radius: 10px; overflow: auto; }
+    /* Fallback pre if diff2html fails */
+    #diffpre { white-space: pre-wrap; padding: 16px; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .meta { color: #666; font-size: 13px; margin: 8px 0 0; }
+  </style>
+
+  <!-- marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" crossorigin="anonymous"></script>
+
+  <!-- diff2html CSS/JS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
+  <!-- highlight.js (optional but improves syntax colors in diff) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js/lib/highlight.js"></script>
 </head>
 <body>
-  <main id="app">
-    <header>
-      <h1>SQL Catalog QA</h1>
-    </header>
+  <h1>SQL Catalog QA</h1>
 
-    <section class="prompt-box">
-      <label for="prompt" class="sr-only">Ask a question</label><br/>
-      <textarea id="prompt" style="width: 600px;"
-        placeholder="Ask me anything about your catalog…&#10;Examples:&#10;• which procedures access table dbo.Order?&#10;• list all columns of dbo.RT_Order"
-        rows="8"></textarea>
-      <div class="prompt-actions">
-        <span class="hint">Press <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> to send</span>
-        <button id="askBtn" title="Send (Ctrl/Cmd+Enter)">Ask</button>
-      </div>
-    </section>
+  <div class="bar">
+    <textarea id="prompt" placeholder="Ask anything about the catalog (e.g., compare dbo.DealOrder vs dbo.DealOrder_20May2017)"></textarea>
+    <button id="ask">Ask</button>
+  </div>
 
-    <section id="status" aria-live="polite"></section>
+  <div class="row">
+    <div id="answer"></div>
+    <div id="diffwrap">
+      <div id="diff"></div>
+      <pre id="diffpre" hidden></pre>
+      <div class="meta" id="diffmeta"></div>
+    </div>
+  </div>
 
-    <section id="answer" class="markdown-body"></section>
-  </main>
+  <script>
+    const server = (new URLSearchParams(location.search)).get('server') || 'http://127.0.0.1:8000';
 
-  <script src="https://cdn.jsdelivr.net/npm/markdown-it@13.0.2/dist/markdown-it.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"></script>
-  <script src="/static/ui.js"></script>
+    async function ask() {
+      const btn = document.getElementById('ask');
+      const prompt = document.getElementById('prompt').value.trim();
+      const answerEl = document.getElementById('answer');
+      const diffWrap = document.getElementById('diffwrap');
+      const diffEl = document.getElementById('diff');
+      const diffPre = document.getElementById('diffpre');
+      const diffMeta = document.getElementById('diffmeta');
+
+      if (!prompt) return;
+
+      btn.disabled = true;
+      answerEl.innerHTML = 'Thinking…';
+      diffWrap.style.display = 'none';
+      diffEl.innerHTML = '';
+      diffPre.hidden = true;
+      diffPre.textContent = '';
+      diffMeta.textContent = '';
+
+      try {
+        const res = await fetch(`${server}/api/ask`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ prompt })
+        });
+        const data = await res.json();
+
+        // Render markdown "answer"
+        const md = (data && data.answer) ? data.answer : '(no answer)';
+        answerEl.innerHTML = marked.parse(md);
+
+        // If unified_diff is present, render a nice side-by-side diff
+        if (data && data.unified_diff) {
+          diffWrap.style.display = 'block';
+          try {
+            const diffHtml = Diff2Html.html(data.unified_diff, {
+              drawFileList: true,
+              outputFormat: 'side-by-side',   // or 'line-by-line'
+              matching: 'words',
+              highlight: true
+            });
+            diffEl.innerHTML = diffHtml;
+            diffPre.hidden = true;
+            diffMeta.textContent = 'Rendered by diff2html';
+            // Optionally highlight SQL blocks inside the diff
+            document.querySelectorAll('#diff code').forEach(el => { try { hljs.highlightElement(el); } catch {} });
+          } catch (e) {
+            // Fallback: show raw unified diff in <pre>
+            diffEl.innerHTML = '';
+            diffPre.hidden = false;
+            diffPre.textContent = data.unified_diff;
+            diffMeta.textContent = 'Raw unified diff (diff2html failed)';
+          }
+        }
+
+      } catch (e) {
+        answerEl.innerHTML = `<span style="color:#b00">Error: ${e}</span>`;
+        diffWrap.style.display = 'none';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('ask').addEventListener('click', ask);
+    document.getElementById('prompt').addEventListener('keydown', (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') ask();
+    });
+  </script>
 </body>
 </html>

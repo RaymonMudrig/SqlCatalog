@@ -1,13 +1,13 @@
-# VectorizeCatalog/qcat/formatters.py
+# qcat/formatters.py
 from __future__ import annotations
-from typing import List, Dict, Any, Iterable, Optional, Set
-import re
-
+from typing import List, Dict, Any, Optional
 from qcat import ops as K
-from qcat.graph import ensure_graph
-from qcli.printers import read_sql_from_item
 
 __all__ = [
+    # counts / listings
+    "render_count_of_kind",
+    "render_list_all_of_kind",
+    # legacy intents
     "render_procs_access_table",
     "render_procs_update_table",
     "render_views_access_table",
@@ -19,170 +19,140 @@ __all__ = [
     "render_list_columns_of_table",
     "render_columns_returned_by_procedure",
     "render_unused_columns_of_table",
-    "render_list_all_of_kind",
     "render_sql_of_entity",
+    # compare
+    "render_compare_sql",
 ]
 
-# ---------- helpers ----------
+def _display_name(it: Dict[str, Any]) -> str:
+    schema = it.get("schema") or it.get("Schema") or ""
+    nm = it.get("name") or it.get("Original_Name") or it.get("Safe_Name") or it.get("safe_name")
+    return f"{schema}.{nm}" if schema and nm and "·" not in str(nm) else str(nm)
 
-def _disp(it: Dict[str, Any]) -> str:
-    return f"{(it.get('schema') or '') + '.' if it.get('schema') else ''}{it.get('name') or it.get('safe_name')}"
+# ---- counts / lists ----
 
-def _sorted_unique(names: Iterable[str]) -> List[str]:
-    seen: Set[str] = set()
-    out: List[str] = []
-    for n in names:
-        key = (n or "").lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(n)
-    out.sort(key=lambda s: s.lower())
-    return out
+def render_count_of_kind(items: List[Dict[str, Any]], kind: Optional[str]) -> str:
+    if not kind:
+        return "Please specify kind (table/procedure/view/function)."
+    names = K.list_all_of_kind(items, kind)
+    title = kind.capitalize() + ("s" if not kind.endswith("s") else "")
+    return f"There are **{len(names)} {title.lower()}**."
 
-def _names(items: List[Dict[str, Any]]) -> List[str]:
-    return _sorted_unique(_disp(it) for it in items)
+def render_list_all_of_kind(items: List[Dict[str, Any]], kind: Optional[str]) -> str:
+    if not kind:
+        return "Please specify kind (table/procedure/view/function)."
+    rows = K.list_all_of_kind(items, kind)
 
-def _by_safe(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    return {(it.get("safe_name") or _disp(it)): it for it in items}
+    title = kind.capitalize() + ("s" if not kind.endswith("s") else "")
+    if not rows:
+        return f"No {title.lower()} found."
+    lines = [f"**All {title.lower()} ({len(rows)})**"] + [f"- `{r}`" for r in rows]
+    return "\n".join(lines)
 
-def _disp_from_safes(items: List[Dict[str, Any]], safes: Iterable[str]) -> List[str]:
-    by = _by_safe(items)
-    return _sorted_unique(_disp(by.get(s, {"schema": "", "name": s})) for s in safes)
-
-def _section(title: str, lines: List[str]) -> str:
-    if not lines:
-        return f"**{title}**\n- (none)"
-    bullets = "\n".join(f"- {ln}" for ln in lines)
-    return f"**{title}** ({len(lines)})\n{bullets}"
-
-def _like_to_regex(like: str) -> re.Pattern:
-    esc = re.escape(like)
-    esc = esc.replace(r"\%", ".*").replace(r"\_", ".")
-    return re.compile(f"^{esc}$", re.IGNORECASE)
-
-# ---------- renderers (deterministic, use ops which read catalog.json) ----------
+# ---- legacy intents ----
 
 def render_procs_access_table(items: List[Dict[str, Any]], table_name: str) -> str:
-    procs_all = K.procs_access_table(items, table_name, fuzzy=False, include_via_views=True, include_indirect=True)
-    procs_wr  = K.procs_update_table(items, table_name, fuzzy=False, include_indirect=True)
-    all_names = _names(procs_all)
-    wr_names  = _names(procs_wr)
-    wr_set = {n.lower() for n in wr_names}
-    rd_names = [n for n in all_names if n.lower() not in wr_set]
-    hdr = f"Procedures that access `{table_name}` — total {len(all_names)}"
-    parts = [
-        f"### {hdr}",
-        _section("WRITE", wr_names),
-        _section("READ", rd_names),
-    ]
-    return "\n\n".join(parts)
+    procs = K.procs_access_table(items, table_name, fuzzy=False)
+    if not procs:
+        return f"No procedures found accessing `{table_name}`."
+    lines = [f"**Procedures that access `{table_name}`** ({len(procs)})"]
+    for it in procs:
+        lines.append(f"- `{_display_name(it)}`")
+    return "\n".join(lines)
 
 def render_procs_update_table(items: List[Dict[str, Any]], table_name: str) -> str:
-    procs = K.procs_update_table(items, table_name, fuzzy=False, include_indirect=True)
-    return _section(f"Procedures that UPDATE `{table_name}`", _names(procs))
+    procs = K.procs_update_table(items, table_name)
+    if not procs:
+        return f"No procedures found updating `{table_name}`."
+    lines = [f"**Procedures that update `{table_name}`** ({len(procs)})"]
+    for it in procs:
+        lines.append(f"- `{_display_name(it)}`")
+    return "\n".join(lines)
 
 def render_views_access_table(items: List[Dict[str, Any]], table_name: str) -> str:
-    views = K.views_access_table(items, table_name, fuzzy=False, transitive=True)
-    return _section(f"Views that access `{table_name}`", _names(views))
+    views = K.views_access_table(items, table_name)
+    if not views:
+        return f"No views found accessing `{table_name}`."
+    lines = [f"**Views that access `{table_name}`** ({len(views)})"]
+    for it in views:
+        lines.append(f"- `{_display_name(it)}`")
+    return "\n".join(lines)
 
 def render_tables_accessed_by_procedure(items: List[Dict[str, Any]], proc_name: str) -> str:
-    rw = K.tables_accessed_by_procedure(items, proc_name, fuzzy=False, include_indirect=True)
-    reads = _disp_from_safes(items, rw.get("reads", []))
-    writes = _disp_from_safes(items, rw.get("writes", []))
-    return "\n\n".join([
-        _section(f"Tables READ by `{proc_name}`", reads),
-        _section(f"Tables WRITTEN by `{proc_name}`", writes)
-    ])
+    reads, writes = K.tables_accessed_by_procedure(items, proc_name)
+    if not reads and not writes:
+        return f"No table accesses found for `{proc_name}`."
+    out = [f"**Tables accessed by `{proc_name}`**"]
+    if reads:
+        out.append("**READS**")
+        out.extend([f"- `{r}`" for r in reads])
+    if writes:
+        out.append("\n**WRITES**")
+        out.extend([f"- `{w}`" for w in writes])
+    return "\n".join(out)
 
 def render_tables_accessed_by_view(items: List[Dict[str, Any]], view_name: str) -> str:
-    reads = K.tables_accessed_by_view(items, view_name, fuzzy=False)
-    return _section(f"Tables READ by `{view_name}`", _disp_from_safes(items, reads))
+    reads = K.tables_accessed_by_view(items, view_name)
+    if not reads:
+        return f"No base tables found for `{view_name}`."
+    lines = [f"**Tables accessed by view `{view_name}`** ({len(reads)})"] + [f"- `{r}`" for r in reads]
+    return "\n".join(lines)
 
 def render_unaccessed_tables(items: List[Dict[str, Any]]) -> str:
     tabs = K.unaccessed_tables(items)
-    return _section("Tables not accessed or updated by any procedures or views", _names(tabs))
+    if not tabs:
+        return "Every table appears to be accessed by at least one view or procedure."
+    lines = [f"**Unaccessed / Unused tables ({len(tabs)})**"] + [f"- `{t}`" for t in tabs]
+    return "\n".join(lines)
 
 def render_procs_called_by_procedure(items: List[Dict[str, Any]], proc_name: str) -> str:
-    calls = K.procs_called_by_procedure(items, proc_name, fuzzy=False)
-    return _section(f"Procedures called by `{proc_name}`", _sorted_unique(calls))
+    procs = K.procs_called_by_procedure(items, proc_name)
+    if not procs:
+        return f"No called procedures found for `{proc_name}`."
+    lines = [f"**Procedures called by `{proc_name}`** ({len(procs)})"] + [f"- `{p}`" for p in procs]
+    return "\n".join(lines)
 
-def render_call_tree(items: List[Dict[str, Any]], proc_name: str, depth: int = 3) -> str:
-    tree = K.call_tree(items, proc_name, max_depth=depth, fuzzy=False)
-    def fmt(n: Dict[str, Any], d: int = 0) -> List[str]:
-        if not n: return []
-        lines = [("  " * d) + f"- {n.get('name') or ''}"]
-        for ch in (n.get("calls") or []):
-            lines.extend(fmt(ch, d + 1))
-        return lines
-    lines = fmt(tree, 0)
-    title = f"Call tree for `{proc_name}` (depth ≤ {depth})"
-    return f"**{title}**\n" + ("\n".join(lines) if lines else "- (none)")
+def render_call_tree(items: List[Dict[str, Any]], proc_name: str, depth: int = 6) -> str:
+    tree_lines = K.call_tree(items, proc_name, max_depth=depth)
+    if not tree_lines:
+        return f"No call tree found for `{proc_name}`."
+    return "**Call tree**\n\n```\n" + "\n".join(tree_lines) + "\n```"
 
 def render_list_columns_of_table(items: List[Dict[str, Any]], table_name: str) -> str:
     res = K.list_columns_of_table(items, table_name, fuzzy=False)
     if not res.get("found"):
-        return f"**Table not found:** `{table_name}`.\nTry: `list all tables like 'Order%'` or include brackets: `[dbo].[Order]`."
+        return f"No columns found for `{table_name}`."
     cols = res.get("columns") or []
-    disp_schema = (res.get("match") or {}).get("schema") or (res.get("match") or {}).get("Schema") or ""
-    disp_name   = (res.get("match") or {}).get("name")   or (res.get("match") or {}).get("Original_Name") or (res.get("match") or {}).get("Safe_Name") or table_name
-    full = f"{disp_schema+'.' if disp_schema else ''}{disp_name}"
-    if not cols:
-        return f"**No columns recorded** for `{full}`."
-    lines = []
-    for c in cols:
-        t = c.get("type") or ""
-        nul = c.get("nullable")
-        nul_str = " null" if nul is True else (" not null" if nul is False else "")
-        lines.append(f"- `{c.get('name')}` {t}{nul_str}".rstrip())
-    return f"**Columns of `{full}`** ({len(lines)})\n" + "\n".join(lines)
+    it = res.get("match") or {}
+    head = f"**Columns of `{_display_name(it)}`** ({len(cols)})"
+    body = [f"- `{c.get('name')}` {(c.get('type') or '').strip()} {'null' if c.get('nullable') else 'not null'}" for c in cols]
+    return "\n".join([head] + body)
 
 def render_columns_returned_by_procedure(items: List[Dict[str, Any]], proc_name: str) -> str:
-    cols = K.columns_returned_by_procedure(items, proc_name, fuzzy=True)
-    return _section(f"Columns returned by `{proc_name}`", [f"`{c}`" for c in cols])
+    cols = K.columns_returned_by_procedure(items, proc_name)
+    if not cols:
+        return f"No returned columns metadata found for `{proc_name}`."
+    lines = [f"**Columns returned by `{proc_name}`** ({len(cols)})"] + [f"- `{c}`" for c in cols]
+    return "\n".join(lines)
 
 def render_unused_columns_of_table(items: List[Dict[str, Any]], table_name: str) -> str:
-    cols = K.unused_columns_of_table(items, table_name, fuzzy=False)
+    cols = K.unused_columns_of_table(items, table_name)
+    if cols is None:
+        return f"No table found for `{table_name}`."
     if not cols:
-        return f"No unused columns detected for `{table_name}`."
-    lines = [f"- `{c.get('name')}` {c.get('type') or ''}".rstrip() for c in cols]
-    return f"**Unused columns of `{table_name}`** ({len(lines)})\n" + "\n".join(lines)
+        return f"No unused/unaccessed columns in `{table_name}`."
+    lines = [f"**Unused / Unaccessed columns of `{table_name}`** ({len(cols)})"] + [f"- `{c}`" for c in cols]
+    return "\n".join(lines)
 
-def render_list_all_of_kind(items: List[Dict[str, Any]], kind: str,
-                            schema: Optional[str] = None,
-                            pattern: Optional[str] = None) -> str:
-    k = (kind or "").lower()
-    filtered = [it for it in items if (it.get("kind") or "").lower() == k]
-    if schema:
-        filtered = [it for it in filtered if (it.get("schema") or "").lower() == schema.lower()]
-    if pattern:
-        rx = _like_to_regex(pattern)
-        filtered = [it for it in filtered if rx.match(it.get("name") or it.get("safe_name") or "")]
-    return _section(
-        f"All {k}s"
-        + (f" in schema `{schema}`" if schema else "")
-        + (f" matching `{pattern}`" if pattern else ""),
-        _names(filtered),
-    )
+def render_sql_of_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> str:
+    it_sql, src, disp = K.get_sql(items, kind, name)
+    if not it_sql:
+        return f"(no SQL found on disk or in index) — `{name}`"
+    return f"### {disp}\n\n```sql\n{it_sql}\n```"
 
-def render_sql_of_entity(items: List[Dict[str, Any]], kind: str, name: str, full: bool = True) -> str:
-    """
-    Print the create SQL of a table/procedure/view/function if available (from export or index).
-    """
-    # Reuse ops' deterministic finder via small wrapper
-    if kind not in {"table", "procedure", "view", "function"}:
-        return f"Unsupported kind: {kind}"
-    # Build a tiny local finder to avoid duplicating ops internals
-    from qcat.ops import _find_item as _find
-    it = _find(items, kind, name, fuzzy=False)
-    if not it:
-        return f"No exact match for `{name}` (kind: {kind})."
-    disp = _disp(it)
-    sql, src = read_sql_from_item(it)
-    if not sql:
-        return f"**{kind.upper()} SQL — {disp}**\n(no SQL found on disk or in index)"
-    if not full:
-        head = sql.strip().splitlines()[:60]
-        body = "\n".join(head)
-        return f"**{kind.upper()} SQL — {disp}** (first {len(head)} lines)\n\n```\n{body}\n```"
-    return f"**{kind.upper()} SQL — {disp}**\n\n```\n{sql.strip()}\n```"
+# ---- compare ----
+
+def render_compare_sql(items: List[Dict[str, Any]],
+                       left_kind: Optional[str], left_name: str,
+                       right_kind: Optional[str], right_name: str) -> Dict[str, str]:
+    return K.compare_sql(items, left_kind, left_name, right_kind, right_name)
