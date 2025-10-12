@@ -1,74 +1,106 @@
+# qcat/agent.py
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
-from qcat.intents import parse_intent
+from typing import Any, Dict, Optional, Tuple
+from qcat import ops as K
 from qcat import formatters as F
+from qcat.llm_intent import classify_intent
+from qcat.intents import label_of
 
-def agent_answer(query: str, items: List[Dict[str, Any]], emb=None,
-                 schema_filter: Optional[str]=None, name_pattern: Optional[str]=None) -> Dict[str, Any]:
+CONFIRM_THRESHOLD = 0.70  # propose if below this
+
+def agent_answer(
+    query: str,
+    items: Dict[str, Any],
+    emb: Optional[Any] = None,
+    schema_filter: Optional[str] = None,
+    name_pattern: Optional[str] = None,
+    intent_override: Optional[Dict[str, Any]] = None,
+    accept_proposal: bool = False,
+) -> Dict[str, Any]:
     """
-    Returns a dict with at least {"answer": "..."} and optionally {"unified_diff": "..."} for diff2html.
+    Agentic dispatcher:
+      - classify prompt -> intent (+ args) with confidence
+      - if confidence >= threshold OR user accepted proposal -> execute
+      - else return a proposal (needs_confirmation=True)
     """
-    p = parse_intent(query)
-    itype = p.get("intent")
+    # 1) pick intent: override > classify
+    if intent_override:
+        L = dict(intent_override)
+        L.setdefault("confidence", 1.0)
+        L.setdefault("source", "override")
+    else:
+        L = classify_intent(query)
 
-    print(f"[agent] parsed intent: {itype} with params {p}")
+    print(f"[agent_answer] Classified intent: {L}")
 
-    # ---- new compare intent ----
-    if itype == "compare_sql":
-        L, R = p.get("left") or {}, p.get("right") or {}
-        out = F.render_compare_sql(items, L.get("kind"), L.get("name"), R.get("kind"), R.get("name"))
-        return out if isinstance(out, dict) else {"answer": str(out), "parsed": p}
+    # If user accepted proposal, force execution
+    if accept_proposal and L.get("intent") != "semantic":
+        L["confidence"] = max(0.99, float(L.get("confidence", 0)))
 
-    # ---- legacy intents preserved ----
-    if itype == "procs_access_table":
-        return {"answer": F.render_procs_access_table(items, p["name"]), "parsed": p}
+    intent = L.get("intent")
 
-    if itype == "procs_update_table":
-        return {"answer": F.render_procs_update_table(items, p["name"]), "parsed": p}
+    # 2) If not confident, propose to user
+    if intent == "semantic" or float(L.get("confidence", 0)) < CONFIRM_THRESHOLD:
+        # Build a short human message
+        guess = L.get("intent", "semantic")
+        guess_label = label_of(guess) if guess in F.INTENT_TO_RENDERER else "semantic"
+        props = {k: v for k, v in L.items() if k not in ("intent", "confidence", "source")}
+        return {
+            "answer": f"I think you meant: **{guess_label}**.\n\n"
+                      f"_Parsed:_ `{props}`\n\n"
+                      f"Click **Accept** to run this, or refine your question.",
+            "needs_confirmation": True,
+            "proposal": L,
+        }
 
-    if itype == "views_access_table":
-        return {"answer": F.render_views_access_table(items, p["name"]), "parsed": p}
+    # 3) Confident: execute via formatters/ops
+    # All your existing render_* functions are kept intact.
+    try:
+        if intent == "list_all_tables":
+            return {"answer": F.render_list_all_tables(items, schema=L.get("schema"), name_pattern=L.get("pattern"))}
+        if intent == "list_all_views":
+            return {"answer": F.render_list_all_views(items, schema=L.get("schema"), name_pattern=L.get("pattern"))}
+        if intent == "list_all_procedures":
+            return {"answer": F.render_list_all_procedures(items, schema=L.get("schema"), name_pattern=L.get("pattern"))}
+        if intent == "list_all_functions":
+            return {"answer": F.render_list_all_functions(items, schema=L.get("schema"), name_pattern=L.get("pattern"))}
 
-    if itype == "tables_accessed_by_procedure":
-        return {"answer": F.render_tables_accessed_by_procedure(items, p["name"]), "parsed": p}
+        if intent == "list_columns_of_table":
+            return {"answer": F.render_list_columns_of_table(items, L.get("name"), schema_filter)}
 
-    if itype == "tables_accessed_by_view":
-        return {"answer": F.render_tables_accessed_by_view(items, p["name"]), "parsed": p}
+        if intent == "procs_access_table":
+            return {"answer": F.render_procs_access_table(items, L.get("name"))}
+        if intent == "procs_update_table":
+            return {"answer": F.render_procs_update_table(items, L.get("name"))}
+        if intent == "views_access_table":
+            return {"answer": F.render_views_access_table(items, L.get("name"))}
+        if intent == "tables_accessed_by_procedure":
+            return {"answer": F.render_tables_accessed_by_procedure(items, L.get("name"))}
+        if intent == "tables_accessed_by_view":
+            return {"answer": F.render_tables_accessed_by_view(items, L.get("name"))}
+        if intent == "unaccessed_tables":
+            return {"answer": F.render_unaccessed_tables(items)}
+        if intent == "procs_called_by_procedure":
+            return {"answer": F.render_procs_called_by_procedure(items, L.get("name"))}
+        if intent == "call_tree":
+            return {"answer": F.render_call_tree(items, L.get("name"))}
+        if intent == "columns_returned_by_procedure":
+            return {"answer": F.render_columns_returned_by_procedure(items, L.get("name"))}
+        if intent == "unused_columns_of_table":
+            return {"answer": F.render_unused_columns_of_table(items, L.get("name"))}
 
-    if itype == "unaccessed_tables":
-        return {"answer": F.render_unaccessed_tables(items), "parsed": p}
+        if intent == "sql_of_entity":
+            print(f"[agent_answer] Executing sql_of_entity with kind={L.get('kind')} name={L.get('name')}")
+            return {"answer": F.render_sql_of_entity(items, L.get("kind") or "any", L.get("name"))}
 
-    if itype == "procs_called_by_procedure":
-        return {"answer": F.render_procs_called_by_procedure(items, p["name"]), "parsed": p}
+        if intent == "compare_sql":
+            left = L.get("left")
+            right = L.get("right")
+            kind = L.get("kind") or "any"
+            return F.render_compare_sql(items, kind, left, kind, right)
 
-    if itype == "call_tree":
-        return {"answer": F.render_call_tree(items, p["name"], depth=6), "parsed": p}
+        # fallback – shouldn’t happen
+        return {"answer": "Sorry, I couldn't resolve your intent."}
 
-    if itype == "list_columns_of_table":
-        return {"answer": F.render_list_columns_of_table(items, p["name"]), "parsed": p}
-
-    if itype == "columns_returned_by_procedure":
-        return {"answer": F.render_columns_returned_by_procedure(items, p["name"]), "parsed": p}
-
-    if itype == "unused_columns_of_table":
-        return {"answer": F.render_unused_columns_of_table(items, p["name"]), "parsed": p}
-
-    if itype == "sql_of_entity":
-        return {"answer": F.render_sql_of_entity(items, p.get("kind"), p["name"]), "parsed": p}
-
-    # explicit list-all intents
-    if itype == "list_all_tables":
-        return {"answer": F.render_list_all_of_kind(items, "table"), "parsed": p}
-    if itype == "list_all_views":
-        return {"answer": F.render_list_all_of_kind(items, "view"), "parsed": p}
-    if itype == "list_all_procedures":
-        return {"answer": F.render_list_all_of_kind(items, "procedure"), "parsed": p}
-    if itype == "list_all_functions":
-        return {"answer": F.render_list_all_of_kind(items, "function"), "parsed": p}
-
-    # counts (not in your legacy list, but keeping it as it was working)
-    if itype == "count_of_kind":
-        return {"answer": F.render_count_of_kind(items, p.get("kind")), "parsed": p}
-
-    # fallback
-    return {"answer": f"Sorry, I couldn't understand. Parsed: {p}", "parsed": p}
+    except Exception as e:
+        return {"answer": f"Error while executing intent `{intent}`: {e!r}"}

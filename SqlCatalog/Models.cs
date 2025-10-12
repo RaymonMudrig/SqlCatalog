@@ -79,7 +79,7 @@ namespace SqlCatalog
         string Ref_Table_Original
     );
 
-    public sealed record ObjRef(string? Schema, string Safe_Name);
+    public sealed record ObjRef(string? Schema, string Safe_Name, string? AccessType = null);
 
     public sealed record UsageRef(string Kind, string Safe_Name, string Context);
 

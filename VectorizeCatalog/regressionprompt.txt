@@ -1,0 +1,22 @@
+Berikut adalah daftar pertanyaan untuk melakukan test 
+
+all tables
+all procedures
+all views
+all functions
+list all columns of dbo.Order_Trx table
+which procedure access table dbo.Order_Trx
+which procedure updating table dbo.Order_Trx
+what table accessed by dbo.Order_Trx_Update procedure
+list all columns resulted by dbo.RtBoGetOrderDone procedure
+list all unused columns of dbo.Order_Trx in any procedure 
+compare dbo.Order_Trx vs dbo.Order_Log
+list all unused tables
+
+call tree example
+Simple cases (1 level):
+  - dbo.updateClientCash → calls addClientCash
+  - dbo.updateClientStock → calls addClientStock
+
+More complex case (multiple calls):
+  - dbo.SelectUser_Logon → calls 4 procedures: CekInsertLogLogin, updateUserLoginSuccess, updateUserLoginFail

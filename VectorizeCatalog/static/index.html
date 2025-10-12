@@ -26,6 +26,19 @@
     /* Fallback pre if diff2html fails */
     #diffpre { white-space: pre-wrap; padding: 16px; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .meta { color: #666; font-size: 13px; margin: 8px 0 0; }
+    /* Clickable entities */
+    .clickable-entity {
+      cursor: pointer;
+      color: #0066cc;
+      text-decoration: none;
+      padding: 2px 4px;
+      border-radius: 3px;
+      transition: background-color 0.2s;
+    }
+    .clickable-entity:hover {
+      background-color: #e6f2ff;
+      text-decoration: underline;
+    }
   </style>
 
   <!-- marked.js for markdown rendering -->
@@ -58,6 +71,55 @@
   <script>
     const server = (new URLSearchParams(location.search)).get('server') || 'http://127.0.0.1:8000';
 
+    // Function to make entity names clickable
+    function makeEntitiesClickable(element) {
+      // Find all <code> elements (markdown backticks render as <code>)
+      const codeElements = element.querySelectorAll('code');
+
+      codeElements.forEach(codeEl => {
+        const text = codeEl.textContent.trim();
+
+        // Match entity patterns like: dbo.TableName, schema.ProcName, TableName.ColumnName, etc.
+        // Also match qualified columns like dbo.Table.Column
+        // Allow spaces within names (e.g., "dbo.BO Client Cash")
+        const entityPattern = /^([a-zA-Z_][\w\s]*\.)?[a-zA-Z_][\w\s]*(\.[a-zA-Z_][\w\s]*)?$/;
+
+        if (entityPattern.test(text)) {
+          // Create a clickable span
+          const span = document.createElement('span');
+          span.className = 'clickable-entity';
+          span.textContent = text;
+          span.title = `Click to add "${text}" to prompt`;
+
+          span.addEventListener('click', (e) => {
+            e.preventDefault();
+            const promptInput = document.getElementById('prompt');
+            const currentValue = promptInput.value.trim();
+
+            // Wrap entity in backticks to avoid ambiguity with spaces
+            const wrappedText = '`' + text + '`';
+
+            // Append entity to prompt with a space if needed
+            if (currentValue) {
+              promptInput.value = currentValue + ' ' + wrappedText;
+            } else {
+              promptInput.value = wrappedText;
+            }
+
+            // Focus the prompt input
+            promptInput.focus();
+
+            // Move cursor to end
+            promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+          });
+
+          // Replace the code element's content with our clickable span
+          codeEl.innerHTML = '';
+          codeEl.appendChild(span);
+        }
+      });
+    }
+
     async function ask() {
       const btn = document.getElementById('ask');
       const prompt = document.getElementById('prompt').value.trim();
@@ -88,6 +150,9 @@
         // Render markdown "answer"
         const md = (data && data.answer) ? data.answer : '(no answer)';
         answerEl.innerHTML = marked.parse(md);
+
+        // Make entity names clickable
+        makeEntitiesClickable(answerEl);
 
         // If unified_diff is present, render a nice side-by-side diff
         if (data && data.unified_diff) {

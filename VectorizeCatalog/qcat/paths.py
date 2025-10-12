@@ -40,3 +40,28 @@ SQL_EXPORTS_TABLES     = SQL_EXPORTS_DIR / "tables"
 SQL_EXPORTS_PROCEDURES = SQL_EXPORTS_DIR / "procedures"
 SQL_EXPORTS_VIEWS      = SQL_EXPORTS_DIR / "views"
 SQL_EXPORTS_FUNCTIONS  = SQL_EXPORTS_DIR / "functions"
+
+__all__ = [
+    "BASE", "ROOT_ABOVE",
+    "OUTPUT_DIR", "SQL_FILES_DIR",
+    "INDEX_DIR", "CATALOG",
+    "ITEMS_PATH", "EMB_PATH",
+    "ensure_dirs",
+    "CATALOG_JSON", "ITEMS_JSON",
+    "SQL_EXPORTS_DIR",
+    "SQL_EXPORTS_TABLES", "SQL_EXPORTS_PROCEDURES",
+    "SQL_EXPORTS_VIEWS", "SQL_EXPORTS_FUNCTIONS",
+    "sql_export_path",
+]
+
+def sql_export_path(kind: str, safe_name: str) -> Path:
+    """Helper to get the path of an exported SQL file."""
+    k = (kind or "").lower()
+    base = {
+        "table": SQL_EXPORTS_TABLES,
+        "view": SQL_EXPORTS_VIEWS,
+        "procedure": SQL_EXPORTS_PROCEDURES,
+        "function": SQL_EXPORTS_FUNCTIONS,
+    }.get(k, SQL_EXPORTS_DIR)
+    name = (safe_name or "").replace("·", ".").replace("/", "_")
+    return base / f"{name}.sql"

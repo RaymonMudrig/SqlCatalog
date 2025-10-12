@@ -31,9 +31,23 @@ namespace SqlCatalog
             var seenR = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seenW = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Reads
+            // Build alias-to-table mapping for column resolution
+            var aliasMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            // Reads (and collect aliases)
             foreach (var nt in DomExtensions.GetDescendants<NamedTableReference>(node))
+            {
                 Helpers.AddRead(seenR, p.Reads, nt.SchemaObject);
+
+                // Track alias -> table mapping
+                if (nt.SchemaObject != null)
+                {
+                    var (tschema, tname, tsafe) = Helpers.NameOf(nt.SchemaObject);
+                    var alias = nt.Alias?.Value ?? tname; // Use alias if present, otherwise table name
+                    if (!string.IsNullOrWhiteSpace(alias))
+                        aliasMap[alias] = tsafe;
+                }
+            }
 
             // Writes: INSERT / UPDATE / DELETE
             foreach (var ins in DomExtensions.GetDescendants<InsertStatement>(node))
@@ -57,7 +71,7 @@ namespace SqlCatalog
                 }
             }
 
-            // Column references (best-effort)
+            // Column references (best-effort with alias resolution)
             foreach (var cref in DomExtensions.GetDescendants<ColumnReferenceExpression>(node))
             {
                 var ids = cref.MultiPartIdentifier?.Identifiers;
@@ -86,8 +100,80 @@ namespace SqlCatalog
                 if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(colName))
                     continue;
 
-                var safeTbl = Helpers.SafeTableKey(schemaName, tableName);
-                Helpers.AddColumnRef(p.Column_Refs, safeTbl, colName);
+                // Try to resolve alias to actual table name
+                string resolvedTable;
+                if (aliasMap.TryGetValue(tableName, out var mapped))
+                {
+                    resolvedTable = mapped;
+                }
+                else
+                {
+                    resolvedTable = Helpers.SafeTableKey(schemaName, tableName);
+                }
+
+                Helpers.AddColumnRef(p.Column_Refs, resolvedTable, colName);
+            }
+
+            // UPDATE SET columns (writes)
+            foreach (var upd in DomExtensions.GetDescendants<UpdateStatement>(node))
+            {
+                var target = upd.UpdateSpecification?.Target;
+                string? targetTable = null;
+
+                // Get the target table name
+                if (target is NamedTableReference ntr)
+                {
+                    var (_, tname, tsafe) = Helpers.NameOf(ntr.SchemaObject);
+                    targetTable = tsafe;
+                }
+
+                if (string.IsNullOrWhiteSpace(targetTable))
+                    continue;
+
+                // Extract columns from SET clause
+                foreach (var setClause in upd.UpdateSpecification?.SetClauses ?? Enumerable.Empty<SetClause>())
+                {
+                    if (setClause is AssignmentSetClause asc)
+                    {
+                        var colRef = asc.Column;
+                        var ids = colRef?.MultiPartIdentifier?.Identifiers;
+                        if (ids != null && ids.Count > 0)
+                        {
+                            var colName = ids[^1].Value; // Last identifier is the column name
+                            if (!string.IsNullOrWhiteSpace(colName))
+                                Helpers.AddColumnRef(p.Column_Refs, targetTable, colName);
+                        }
+                    }
+                }
+            }
+
+            // INSERT column lists (writes)
+            foreach (var ins in DomExtensions.GetDescendants<InsertStatement>(node))
+            {
+                var target = ins.InsertSpecification?.Target;
+                string? targetTable = null;
+
+                // Get the target table name
+                if (target is NamedTableReference ntr)
+                {
+                    var (_, tname, tsafe) = Helpers.NameOf(ntr.SchemaObject);
+                    targetTable = tsafe;
+                }
+
+                if (string.IsNullOrWhiteSpace(targetTable))
+                    continue;
+
+                // Extract columns from INSERT column list
+                foreach (var col in ins.InsertSpecification?.Columns ?? Enumerable.Empty<ColumnReferenceExpression>())
+                {
+                    var ids = col.MultiPartIdentifier?.Identifiers;
+                    if (ids != null && ids.Count > 0)
+                    {
+                        var colName = ids[^1].Value; // Last identifier is the column name
+                        if (!string.IsNullOrWhiteSpace(colName))
+                            Helpers.AddColumnRef(p.Column_Refs, targetTable, colName);
+                    }
+                }
             }
 
             // Header doc

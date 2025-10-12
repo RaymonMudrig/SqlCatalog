@@ -10,8 +10,7 @@ internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
 
     public override void ExplicitVisit(CreateTableStatement node)
     {
-        var (schema, name, _) = Helpers.NameOf(node.SchemaObjectName);
-        var safe = Helpers.SafeKey(name);
+        var (schema, name, safe) = Helpers.NameOf(node.SchemaObjectName);
 
         if (!_catalog.Tables.TryGetValue(safe, out var t))
         {
@@ -50,10 +49,10 @@ internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
                 }
                 case ForeignKeyConstraintDefinition fk:
                 {
-                    var (rs, rn, _) = Helpers.NameOf(fk.ReferenceTableName);
+                    var (rs, rn, rsafe) = Helpers.NameOf(fk.ReferenceTableName);
                     var refCol = fk.ReferencedTableColumns.FirstOrDefault()?.Value ?? "";
                     var localCol = fk.Columns.FirstOrDefault()?.Value ?? "";
-                    t.Foreign_Keys.Add(new ForeignKeyRef(localCol, rs, Helpers.SafeKey(rn), refCol, rn));
+                    t.Foreign_Keys.Add(new ForeignKeyRef(localCol, rs, rsafe, refCol, rn));
                     break;
                 }
             }
@@ -74,8 +73,7 @@ internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
 
     public override void ExplicitVisit(CreateIndexStatement node)
     {
-        var (schema, tableName, _) = Helpers.NameOf(node.OnName);
-        var safe = Helpers.SafeKey(tableName);
+        var (schema, tableName, safe) = Helpers.NameOf(node.OnName);
         if (!_catalog.Tables.TryGetValue(safe, out var t))
         {
             t = new TableInfo { Schema = schema, Original_Name = tableName, Safe_Name = safe };
@@ -92,8 +90,7 @@ internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
 
     public override void ExplicitVisit(AlterTableAddTableElementStatement node)
     {
-        var (schema, tableName, _) = Helpers.NameOf(node.SchemaObjectName);
-        var safe = Helpers.SafeKey(tableName);
+        var (schema, tableName, safe) = Helpers.NameOf(node.SchemaObjectName);
         if (!_catalog.Tables.TryGetValue(safe, out var t))
         {
             t = new TableInfo { Schema = schema, Original_Name = tableName, Safe_Name = safe };
@@ -113,10 +110,10 @@ internal sealed class TableVisitor(Catalog catalog) : TSqlFragmentVisitor
                 }
                 case ForeignKeyConstraintDefinition fk:
                 {
-                    var (rs, rn, _) = Helpers.NameOf(fk.ReferenceTableName);
+                    var (rs, rn, rsafe) = Helpers.NameOf(fk.ReferenceTableName);
                     var refCol = fk.ReferencedTableColumns.FirstOrDefault()?.Value ?? "";
                     var localCol = fk.Columns.FirstOrDefault()?.Value ?? "";
-                    t.Foreign_Keys.Add(new ForeignKeyRef(localCol, rs, Helpers.SafeKey(rn), refCol, rn));
+                    t.Foreign_Keys.Add(new ForeignKeyRef(localCol, rs, rsafe, refCol, rn));
                     break;
                 }
             }

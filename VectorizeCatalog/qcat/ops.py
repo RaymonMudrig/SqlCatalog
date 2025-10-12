@@ -1,9 +1,43 @@
 # qcat/ops.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Tuple, Set
+from typing import List, Dict, Any, Optional, Tuple, Set, Iterable
 import re, difflib, html
 
 from qcli.printers import read_sql_from_item
+
+# Map kind -> section key in catalog.json
+_SECTION_BY_KIND = {
+    "table": "Tables",
+    "view": "Views",
+    "procedure": "Procedures",
+    "function": "Functions",
+}
+
+_bracket_re = re.compile(r'[\[\]`"]')
+_spaces_re = re.compile(r'\s+')
+
+def _norm_ident(s: Optional[str]) -> str:
+    """Normalize SQL identifiers for matching: strip [ ], quotes, collapse spaces, lower, unify separator."""
+    if not s:
+        return ""
+    s = s.replace("·", ".")
+    s = _bracket_re.sub("", s)
+    s = _spaces_re.sub(" ", s.strip())
+    return s.lower()
+
+def _split_schema_and_name(s: str) -> Tuple[Optional[str], str]:
+    """Return (schema?, name) from e.g. '[dbo].[Order]' or 'Order'."""
+    s = _norm_ident(s)
+    if "." in s:
+        sch, nm = s.split(".", 1)
+        return (sch or None), nm
+    return None, s
+
+def _catalog_section(items: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """Return catalog section dict (safe_name -> meta) for a kind."""
+    catalog = (items or {}).get("catalog") or {}
+    key = _SECTION_BY_KIND.get((kind or "").lower(), "")
+    return catalog.get(key, {}) or {}
 
 # ============================================================
 # Normalization: accept either flat items list OR catalog.json
@@ -14,81 +48,95 @@ def as_items_list(obj) -> List[Dict[str, Any]]:
     Normalize input to a flat list of item dicts with at least:
       kind in {table, view, procedure, function}
       schema, name, safe_name (best-effort)
+
     Accepts:
       - items.json-like: List[dict]
-      - catalog.json-like: Dict with keys Tables/Views/Procedures/Functions
+      - wrapper dict: {"items":[...], "catalog":{...}}
+      - catalog.json-like: {"Tables":{...}, "Views":{...}, "Procedures":{...}, "Functions":{...}}
+      - dict keyed by id where values already look like items (contain 'kind')
     """
+    # 1) Already a flat list
     if isinstance(obj, list):
         return obj
 
-    if isinstance(obj, dict):
-        # If it already looks like a dict of items keyed by id, just return its values.
-        # (As a fallback when 'kind' present inside values.)
-        if any(isinstance(v, dict) for v in obj.values()):
-            vals = list(obj.values())
-            if any(isinstance(v, dict) and ("kind" in v or "Kind" in v) for v in vals):
-                return vals
+    if not isinstance(obj, dict):
+        return []
 
-        items: List[Dict[str, Any]] = []
+    # 2) Wrapper dict with a ready-made list
+    if isinstance(obj.get("items"), list):
+        return obj["items"]
 
-        def _safe(schema: Optional[str], name: str) -> str:
-            return f"{schema}·{name}" if schema else name
+    # 3) If there's a nested 'catalog', use that as the source; otherwise use obj itself
+    source = obj.get("catalog")
+    if not isinstance(source, dict):
+        source = obj
 
-        # Tables
-        tables = obj.get("Tables") or obj.get("tables") or {}
-        if isinstance(tables, dict):
-            for key_name, meta in tables.items():
-                meta = meta or {}
-                schema = meta.get("Schema") or meta.get("schema") or ""
-                name = meta.get("Original_Name") or meta.get("Name") or key_name
-                sname = meta.get("Safe_Name") or meta.get("safe_name") or name
-                item = {
-                    "kind": "table",
-                    "schema": schema,
-                    "name": name,
-                    "safe_name": _safe(schema, sname),
-                    # carry over rich fields (if present)
-                    "Columns": meta.get("Columns"),
-                    "Primary_Key": meta.get("Primary_Key") or meta.get("PrimaryKey"),
-                    "Foreign_Keys": meta.get("Foreign_Keys"),
-                    "Indexes": meta.get("Indexes"),
-                    "Referenced_By": meta.get("Referenced_By"),
-                    "Doc": meta.get("Doc"),
-                }
-                items.append(item)
+    # 3a) If values already look like items (contain 'kind'), just return those values
+    vals = list(source.values())
+    if vals and all(isinstance(v, dict) for v in vals) and any(("kind" in v or "Kind" in v) for v in vals):
+        return vals  # dict-of-items form
 
-        # Views / Procedures / Functions
-        def _ingest(section: str, kind: str):
-            src = obj.get(section) or obj.get(section.lower()) or {}
-            if isinstance(src, dict):
-                for key_name, meta in src.items():
-                    meta = meta or {}
-                    schema = meta.get("Schema") or meta.get("schema") or ""
-                    name = meta.get("Original_Name") or meta.get("Name") or key_name
-                    sname = meta.get("Safe_Name") or meta.get("safe_name") or name
-                    item = {
-                        "kind": kind,
-                        "schema": schema,
-                        "name": name,
-                        "safe_name": _safe(schema, sname),
-                    }
-                    # carry references if present
-                    for k in ("Doc", "Reads", "Writes", "Calls", "Returns",
-                              "Referenced_Tables", "References"):
-                        v = meta.get(k)
-                        if v is not None:
-                            item[k] = v
-                    items.append(item)
+    items: List[Dict[str, Any]] = []
 
-        _ingest("Views", "view")
-        _ingest("Procedures", "procedure")
-        _ingest("Functions", "function")
+    def _safe(schema: Optional[str], name: str) -> str:
+        return f"{schema}·{name}" if schema else name
 
-        if items:
-            return items
+    # 4) Tables from catalog-like dict
+    tables = source.get("Tables") or source.get("tables") or {}
+    if isinstance(tables, dict):
+        for key_name, meta in tables.items():
+            meta = meta or {}
+            schema = meta.get("Schema") or meta.get("schema") or ""
+            name = meta.get("Original_Name") or meta.get("Name") or key_name
+            sname = meta.get("Safe_Name") or meta.get("safe_name") or name
+            # If Safe_Name already has schema separator, use it as-is; otherwise build it
+            safe_name_final = sname if "·" in sname else _safe(schema, sname)
+            item = {
+                "kind": "table",
+                "schema": schema,
+                "name": name,
+                "safe_name": safe_name_final,
+                # carry over useful fields
+                "Columns": meta.get("Columns"),
+                "Primary_Key": meta.get("Primary_Key") or meta.get("PrimaryKey"),
+                "Foreign_Keys": meta.get("Foreign_Keys"),
+                "Indexes": meta.get("Indexes"),
+                "Referenced_By": meta.get("Referenced_By"),
+                "Doc": meta.get("Doc"),
+            }
+            items.append(item)
 
-    # Unknown shape
-    return []
+    # 5) Views / Procedures / Functions
+    def _ingest(section: str, kind: str):
+        src = source.get(section) or source.get(section.lower()) or {}
+        if not isinstance(src, dict):
+            return
+        for key_name, meta in src.items():
+            meta = meta or {}
+            schema = meta.get("Schema") or meta.get("schema") or ""
+            name = meta.get("Original_Name") or meta.get("Name") or key_name
+            sname = meta.get("Safe_Name") or meta.get("safe_name") or name
+            # If Safe_Name already has schema separator, use it as-is; otherwise build it
+            safe_name_final = sname if "·" in sname else _safe(schema, sname)
+            item = {
+                "kind": kind,
+                "schema": schema,
+                "name": name,
+                "safe_name": safe_name_final,
+            }
+            # carry references if present
+            for k in ("Doc", "Reads", "Writes", "Calls", "Returns",
+                      "Referenced_Tables", "References", "Column_Refs"):
+                v = meta.get(k)
+                if v is not None:
+                    item[k] = v
+            items.append(item)
+
+    _ingest("Views", "view")
+    _ingest("Procedures", "procedure")
+    _ingest("Functions", "function")
+
+    return items
 
 
 # -------------------- Name utilities --------------------
@@ -153,6 +201,8 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
     wl_base   = (want_base or "").lower()
     k_l = (kind or "").lower()
 
+    print(f"[ops] _find_item called with kind={kind}, name={name}, fuzzy={fuzzy}, want_schema={want_schema}, want_base={want_base}")
+
     for it in items:
         if (it.get("kind") or "").lower() != k_l:
             continue
@@ -163,6 +213,8 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             if (nm or "").lower() == wl_base:
                 return it
 
+    print(f"[ops] _find_item exact match failed, trying wl_schema={wl_schema}, fuzzy={fuzzy}")
+
     if wl_schema:
         safe = _safe(want_schema, want_base).lower()
         for it in items:
@@ -171,6 +223,8 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             sname = (it.get("safe_name") or _ci_get(it, "Safe_Name") or "")
             if isinstance(sname, str) and sname.lower() == safe:
                 return it
+            
+    print(f"[ops] _find_item schema-restricted match failed, trying fuzzy={fuzzy}")
 
     if not wl_schema:
         for it in items:
@@ -181,6 +235,8 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
                 if (nm or "").lower() == wl_base:
                     return it
 
+    print(f"[ops] _find_item no exact match found, fuzzy={fuzzy}")
+
     if fuzzy:
         for it in items:
             if (it.get("kind") or "").lower() != k_l:
@@ -188,7 +244,75 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             _s, cands = _names_for_match(it)
             if any(wl_base in (nm or "").lower() for nm in cands):
                 return it
+            
+    print(f"[ops] _find_item no match found")
+
     return None
+
+def find_item(
+    items: Dict[str, Any],
+    kind: str,
+    name: str,
+    schema: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """
+    Deterministic resolver for an entity in catalog.json.
+
+    Tries, in order:
+      1) exact match on normalized name (with/without schema) against Safe_Name, Original_Name, and key
+      2) if schema filter present, restrict to that schema
+      3) fallback: substring match on Safe_Name if (1) fails
+    Returns (fully_qualified_display, meta) or (None, None).
+    """
+    if not name:
+        return None, None
+
+    sec = _catalog_section(items, kind)
+    if not sec:
+        return None, None
+
+    in_schema, in_name = _split_schema_and_name(name)
+    wl_schema = _norm_ident(schema) if schema else None
+    if in_schema:
+        wl_schema = in_schema
+
+    # Build candidates with normalized fields once
+    candidates: Iterable[Tuple[str, Dict[str, Any], str, str, str, str]] = []
+    built = []
+    for safe, meta in sec.items():
+        sch = _norm_ident(meta.get("Schema") or "")
+        if wl_schema and sch != wl_schema:
+            continue
+
+        safe_name = meta.get("Safe_Name") or safe
+        display_schema = meta.get("Schema") or ""
+        fq_display = f"{display_schema}.{safe_name}" if display_schema else safe_name
+
+        nm_safe   = _norm_ident(safe_name)
+        nm_orig   = _norm_ident(meta.get("Original_Name") or safe_name)
+        nm_key    = _norm_ident(safe)
+        nm_full_a = _norm_ident(f"{display_schema}.{safe_name}") if display_schema else nm_safe
+        nm_full_b = _norm_ident(f"{display_schema}.{meta.get('Original_Name') or safe_name}") if display_schema else nm_orig
+
+        built.append((fq_display, meta, sch, nm_safe, nm_orig, nm_key, nm_full_a, nm_full_b))
+
+    # 1) Exact match against name part (no schema)
+    for fq_display, meta, sch, nm_safe, nm_orig, nm_key, nm_full_a, nm_full_b in built:
+        if in_name in (nm_safe, nm_orig, nm_key):
+            return fq_display, meta
+
+    # 1b) Exact match against full qualified forms
+    nm_query_full = _norm_ident(name)
+    for fq_display, meta, sch, nm_safe, nm_orig, nm_key, nm_full_a, nm_full_b in built:
+        if nm_query_full in (nm_full_a, nm_full_b):
+            return fq_display, meta
+
+    # 2) Fallback: substring match on Safe_Name
+    for fq_display, meta, sch, nm_safe, nm_orig, nm_key, nm_full_a, nm_full_b in built:
+        if in_name and in_name in nm_safe:
+            return fq_display, meta
+
+    return None, None
 
 def _build_by_safe(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     items = as_items_list(items)
@@ -289,6 +413,7 @@ def list_all_of_kind(items: List[Dict[str, Any]], kind: str) -> List[str]:
     return res
 
 def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False) -> List[Dict[str, Any]]:
+    """Find procedures that SELECT (read from) a table using Referenced_By. If no AccessType, accept all for backward compat."""
     items = as_items_list(items)
     t = _find_item(items, "table", table_name, fuzzy=fuzzy)
     if not t:
@@ -310,6 +435,11 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
         return _safe(schema, sname) if schema else sname
 
     for e in refs:
+        # Accept if AccessType is 'read' OR not specified (backward compat)
+        access_type = e.get("AccessType") if isinstance(e, dict) else None
+        # Skip writes explicitly - allow reads and None (for old catalog.json that has no AccessType)
+        if access_type == "write":
+            continue
         s = _compose_safe(e)
         if not s or s in seen:
             continue
@@ -322,18 +452,42 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
     return results
 
 def procs_update_table(items: List[Dict[str, Any]], table_name: str) -> List[Dict[str, Any]]:
+    """Find procedures that UPDATE/INSERT/DELETE (write to) a table using Referenced_By with AccessType='write'."""
     items = as_items_list(items)
-    tgt_schema, tgt_base = _split_qualified(table_name)
-    tgt = (tgt_base or "").lower()
-    out = []
-    for it in items:
-        if (it.get("kind") or "").lower() != "procedure":
+    t = _find_item(items, "table", table_name, fuzzy=False)
+    if not t:
+        return []
+    by_safe = _build_by_safe(items)
+    refs = _ci_get(t, "Referenced_By") or []
+    results: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def _compose_safe(entry: Any) -> Optional[str]:
+        if not isinstance(entry, dict):
+            return None
+        sname = entry.get("Safe_Name")
+        if not sname:
+            return None
+        if "·" in sname:
+            return sname
+        schema = entry.get("Schema") or ""
+        return _safe(schema, sname) if schema else sname
+
+    for e in refs:
+        # Filter for writes only
+        access_type = e.get("AccessType") if isinstance(e, dict) else None
+        if access_type != "write":
             continue
-        writes = [_normalize_ref_name(x).split(".")[-1].lower() for x in _get_writes(it)]
-        if tgt and tgt in writes:
-            out.append(it)
-    out.sort(key=lambda it: (_ci_get(it, "Schema") or "", it.get("name") or _ci_get(it, "Original_Name") or _ci_get(it, "Safe_Name") or ""))
-    return out
+        s = _compose_safe(e)
+        if not s or s in seen:
+            continue
+        it = by_safe.get(s)
+        if it and (it.get("kind") or "").lower() == "procedure":
+            seen.add(s)
+            results.append(it)
+
+    results.sort(key=lambda it: (_ci_get(it, "Schema") or it.get("schema") or "", it.get("name") or _ci_get(it, "Original_Name") or _ci_get(it, "Safe_Name") or it.get("safe_name") or ""))
+    return results
 
 def views_access_table(items: List[Dict[str, Any]], table_name: str) -> List[Dict[str, Any]]:
     items = as_items_list(items)
@@ -516,10 +670,16 @@ def list_columns_of_table(items: List[Dict[str, Any]], table_name: str, fuzzy=Fa
     return {"found": True, "match": it, "columns": cols}
 
 def columns_returned_by_procedure(items: List[Dict[str, Any]], proc_name: str) -> List[str]:
+    """
+    Return columns that a procedure might return.
+    Format: schema.TableName.ColumnName for columns we can resolve to actual tables.
+    """
     items = as_items_list(items)
     it = _find_item(items, "procedure", proc_name, fuzzy=False)
     if not it:
         return []
+
+    # Try documented returns first
     cols = _get_return_cols(it)
     if not cols:
         ret = _ci_get(it, "Returns")
@@ -527,6 +687,45 @@ def columns_returned_by_procedure(items: List[Dict[str, Any]], proc_name: str) -
             arr = _ci_get(ret, "Columns") or _ci_get(ret, "columns")
             if isinstance(arr, list):
                 cols = [str(x) for x in arr]
+
+    # Fallback: extract columns from Column_Refs and try to resolve table names
+    if not cols:
+        col_refs = _ci_get(it, "Column_Refs")
+        reads = _ci_get(it, "Reads") or []
+
+        if isinstance(col_refs, dict) and reads:
+            # Build a mapping of table names (with and without schema) to full safe names
+            table_map = {}  # lowercase name -> full safe name
+            for r in reads:
+                if isinstance(r, dict):
+                    safe = r.get("Safe_Name", "")
+                    if safe:
+                        # Add both the full name and just the base name
+                        table_map[safe.lower()] = safe
+                        if "·" in safe:
+                            base = safe.split("·", 1)[1]
+                            table_map[base.lower()] = safe
+                        else:
+                            table_map[safe.lower()] = safe
+
+            # Collect all columns with resolved table names
+            qualified_cols = []
+            for table_ref, columns in col_refs.items():
+                # Try to resolve the table reference
+                resolved_table = table_map.get(table_ref.lower())
+
+                if isinstance(columns, (list, set)):
+                    for col in columns:
+                        if resolved_table:
+                            # Format: schema.TableName.ColumnName (convert · to .)
+                            table_display = resolved_table.replace("·", ".")
+                            qualified_cols.append(f"{table_display}.{col}")
+                        else:
+                            # Can't resolve - just use the column name
+                            qualified_cols.append(str(col))
+
+            cols = sorted(set(qualified_cols), key=lambda s: s.lower())
+
     # normalize
     return [_normalize_ref_name(c) for c in cols]
 
@@ -557,15 +756,54 @@ def normalize_sql(sql: str) -> str:
     s = "\n".join([ln for ln in s.split("\n") if ln.strip() != "" or ln == "\n"])
     return s.strip("\n")
 
+# def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> Optional[Dict[str, Any]]:
+
+#     print(f"[ops] _get_entity called with kind={kind} name={name}")
+
+#     items = as_items_list(items)
+#     if kind:
+#         it = _find_item(items, kind, name, fuzzy=False)
+#         if it: return it
+#     for k in ("table","view","procedure","function"):
+#         if kind and k.lower()!=kind.lower(): continue
+#         it = _find_item(items, k, name, fuzzy=False)
+#         if it: return it
+#     return None
+
 def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> Optional[Dict[str, Any]]:
+    """
+    Resolve an entity by name. If kind is one of {table, view, procedure, function},
+    prefer that kind; otherwise (None / '' / 'any' / 'entity') treat as wildcard.
+    """
     items = as_items_list(items)
-    if kind:
-        it = _find_item(items, kind, name, fuzzy=False)
-        if it: return it
-    for k in ("table","view","procedure","function"):
-        if kind and k.lower()!=kind.lower(): continue
+    kind_l = (kind or "").lower()
+    valid = {"table", "view", "procedure", "function"}
+    wildcard = (kind_l == "" or kind_l is None or kind_l not in valid or kind_l in {"any", "entity"})
+
+    print(f"[ops] _get_entity called with kind={kind} name={name}")
+
+    # 1) If kind is valid, try exact in that kind first
+    if not wildcard:
+        it = _find_item(items, kind_l, name, fuzzy=False)
+        if it:
+            return it
+
+    # 2) Try across all kinds (or restricted if kind is valid)
+    for k in ("table", "view", "procedure", "function"):
+        if not wildcard and k != kind_l:
+            continue
         it = _find_item(items, k, name, fuzzy=False)
-        if it: return it
+        if it:
+            return it
+
+    # 3) Fuzzy fallback across allowed kinds
+    for k in ("table", "view", "procedure", "function"):
+        if not wildcard and k != kind_l:
+            continue
+        it = _find_item(items, k, name, fuzzy=True)
+        if it:
+            return it
+
     return None
 
 def get_sql(items: List[Dict[str, Any]], kind: Optional[str], name: str):
@@ -665,6 +903,9 @@ def similarity_sql(items: List[Dict[str, Any]],
 def compare_sql(items: List[Dict[str, Any]],
                 left_kind: Optional[str], left_name: str,
                 right_kind: Optional[str], right_name: str) -> Dict[str, Any]:
+    
+    print(f"[ops] compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
+
     """
     Compare two entities' CREATE SQL.
     Uses get_sql() so it works whether SQL is on disk exports or in the index.
@@ -675,6 +916,9 @@ def compare_sql(items: List[Dict[str, Any]],
     # Resolve entities (for structure similarity and display names)
     l_it = _get_entity(items, left_kind, left_name)
     r_it = _get_entity(items, right_kind, right_name)
+
+    print(f"[ops] compare_sql found left_it: {l_it is not None}, right_it: {r_it is not None}")
+
     if not l_it or not r_it:
         missing = []
         if not l_it: missing.append(f"`{left_name}`")
@@ -684,6 +928,9 @@ def compare_sql(items: List[Dict[str, Any]],
     # Fetch SQL via helper (returns sql, source, display)
     l_sql, _, l_disp = get_sql(items, left_kind, left_name)
     r_sql, _, r_disp = get_sql(items, right_kind, right_name)
+
+    print(f"[ops] compare_sql left : \n{l_sql}")
+    print(f"[ops] compare_sql right: \n{r_sql}")
 
     # If both missing, bail out early
     if not l_sql and not r_sql:
@@ -898,3 +1145,54 @@ def _restore_numeric_parens(s: str, replacements: dict):
     for k, v in replacements.items():
         s = s.replace(k, v)
     return s
+
+# --- compat + generic list helpers -----------------------------------------
+
+def _iter_names_from_items(items, kind: str):
+    """Yield fully-qualified names for a kind from items['catalog']."""
+    kind = (kind or "").lower()
+    catalog = (items or {}).get("catalog") or {}
+    section_map = {"table": "Tables", "view": "Views", "procedure": "Procedures", "function": "Functions"}
+    section = catalog.get(section_map.get(kind, ""), {}) or {}
+    for safe, meta in section.items():
+        #schema = meta.get("Schema") or ""
+        name = meta.get("Safe_Name") or safe
+        # fq = f"{schema}.{name}" if schema else name
+        fq = name
+        yield fq
+
+def list_all_of_kind(items, kind: str, schema: str | None = None, name_pattern: str | None = None):
+    """Generic lister used by all list_all_* wrappers."""
+    import re
+    names = list(_iter_names_from_items(items, kind))
+    if schema:
+        wl_schema = schema.lower().strip("[]")
+        names = [n for n in names if (n.split(".", 1)[0].lower().strip("[]") == wl_schema)]
+    if name_pattern:
+        rx = re.compile(name_pattern, re.I)
+        names = [n for n in names if rx.search(n.split(".", 1)[-1])]
+    return sorted(names, key=str.casefold)
+
+def list_all_tables(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → list_all_of_kind('table', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return list_all_of_kind(items, "table", schema=schema, name_pattern=name_pattern)
+
+def list_all_views(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → list_all_of_kind('view', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return list_all_of_kind(items, "view", schema=schema, name_pattern=name_pattern)
+
+def list_all_procedures(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → list_all_of_kind('procedure', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return list_all_of_kind(items, "procedure", schema=schema, name_pattern=name_pattern)
+
+def list_all_functions(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → list_all_of_kind('function', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return list_all_of_kind(items, "function", schema=schema, name_pattern=name_pattern)

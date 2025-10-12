@@ -118,7 +118,7 @@ def render_call_tree(items: List[Dict[str, Any]], proc_name: str, depth: int = 6
         return f"No call tree found for `{proc_name}`."
     return "**Call tree**\n\n```\n" + "\n".join(tree_lines) + "\n```"
 
-def render_list_columns_of_table(items: List[Dict[str, Any]], table_name: str) -> str:
+def render_list_columns_of_table(items: List[Dict[str, Any]], table_name: str, schema_filter: Optional[str] = None) -> str:
     res = K.list_columns_of_table(items, table_name, fuzzy=False)
     if not res.get("found"):
         return f"No columns found for `{table_name}`."
@@ -145,6 +145,9 @@ def render_unused_columns_of_table(items: List[Dict[str, Any]], table_name: str)
     return "\n".join(lines)
 
 def render_sql_of_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> str:
+
+    print(f"[formatters] render_sql_of_entity called with kind={kind}, name={name}")
+
     it_sql, src, disp = K.get_sql(items, kind, name)
     if not it_sql:
         return f"(no SQL found on disk or in index) — `{name}`"
@@ -155,4 +158,52 @@ def render_sql_of_entity(items: List[Dict[str, Any]], kind: Optional[str], name:
 def render_compare_sql(items: List[Dict[str, Any]],
                        left_kind: Optional[str], left_name: str,
                        right_kind: Optional[str], right_name: str) -> Dict[str, str]:
+    
+    print(f"[formatters] render_compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
+
     return K.compare_sql(items, left_kind, left_name, right_kind, right_name)
+
+# --- compat wrappers for legacy list_all_* intents -------------------------
+
+def render_list_all_of_kind(items, kind: str, schema: str | None = None, name_pattern: str | None = None):
+    """Generic renderer used by all list_all_* wrappers."""
+    try:
+        from qcat import ops as K
+    except Exception:
+        import qcat.ops as K  # fallback
+
+    names = K.list_all_of_kind(items, kind, schema=schema, name_pattern=name_pattern)
+    title_map = {"table": "Tables", "view": "Views", "procedure": "Procedures", "function": "Functions"}
+    title = title_map.get(kind.lower(), f"{kind.title()}s")
+    if not names:
+        return f"**{title}**\n(none found)"
+    lines = "\n".join(f"- `{n}`" for n in names)  # Added backticks for clickable entities
+    return f"**{title}** ({len(names)})\n{lines}"
+
+
+def render_list_all_tables(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → render_list_all_of_kind('table', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return render_list_all_of_kind(items, "table", schema=schema, name_pattern=name_pattern)
+
+
+def render_list_all_views(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → render_list_all_of_kind('view', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return render_list_all_of_kind(items, "view", schema=schema, name_pattern=name_pattern)
+
+
+def render_list_all_procedures(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → render_list_all_of_kind('procedure', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return render_list_all_of_kind(items, "procedure", schema=schema, name_pattern=name_pattern)
+
+
+def render_list_all_functions(items, schema: str | None = None, name_pattern: str | None = None, pattern: str | None = None):
+    """Back-compat alias → render_list_all_of_kind('function', ...)"""
+    if name_pattern is None and pattern is not None:
+        name_pattern = pattern
+    return render_list_all_of_kind(items, "function", schema=schema, name_pattern=name_pattern)

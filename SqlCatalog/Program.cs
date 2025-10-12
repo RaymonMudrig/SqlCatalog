@@ -53,29 +53,91 @@ namespace SqlCatalog
                 // ---------- Post-pass: propagate usage ----------
                 foreach (var p in cat.Procedures.Values)
                 {
-                    foreach (var r in p.Reads.Concat(p.Writes))
-                        if (cat.Tables.TryGetValue(r.Safe_Name, out var t))
-                            t.Referenced_By.Add(new ObjRef(p.Schema, p.Safe_Name));
+                    // Process reads
+                    foreach (var r in p.Reads)
+                    {
+                        // Try exact match first, then try with procedure's schema if unqualified
+                        if (!cat.Tables.TryGetValue(r.Safe_Name, out var t))
+                        {
+                            // If the reference lacks schema, try with the procedure's schema
+                            if (!r.Safe_Name.Contains("·") && !string.IsNullOrEmpty(p.Schema))
+                            {
+                                var qualifiedKey = Helpers.SafeName(p.Schema, r.Safe_Name);
+                                cat.Tables.TryGetValue(qualifiedKey, out t);
+                            }
+                        }
+                        if (t != null)
+                            t.Referenced_By.Add(new ObjRef(p.Schema, p.Safe_Name, "read"));
+                    }
+
+                    // Process writes
+                    foreach (var w in p.Writes)
+                    {
+                        // Try exact match first, then try with procedure's schema if unqualified
+                        if (!cat.Tables.TryGetValue(w.Safe_Name, out var t))
+                        {
+                            // If the reference lacks schema, try with the procedure's schema
+                            if (!w.Safe_Name.Contains("·") && !string.IsNullOrEmpty(p.Schema))
+                            {
+                                var qualifiedKey = Helpers.SafeName(p.Schema, w.Safe_Name);
+                                cat.Tables.TryGetValue(qualifiedKey, out t);
+                            }
+                        }
+                        if (t != null)
+                            t.Referenced_By.Add(new ObjRef(p.Schema, p.Safe_Name, "write"));
+                    }
 
                     foreach (var kv in p.Column_Refs)
                     {
-                        if (!cat.Tables.TryGetValue(kv.Key, out var t)) continue;
-                        foreach (var col in kv.Value)
-                            if (t.Columns.TryGetValue(col, out var ci))
-                                ci.Referenced_In.Add(new UsageRef("procedure", p.Safe_Name, "unknown"));
+                        // Try exact match first, then with procedure's schema
+                        if (!cat.Tables.TryGetValue(kv.Key, out var t))
+                        {
+                            if (!kv.Key.Contains("·") && !string.IsNullOrEmpty(p.Schema))
+                            {
+                                var qualifiedKey = Helpers.SafeName(p.Schema, kv.Key);
+                                cat.Tables.TryGetValue(qualifiedKey, out t);
+                            }
+                        }
+                        if (t != null)
+                        {
+                            foreach (var col in kv.Value)
+                                if (t.Columns.TryGetValue(col, out var ci))
+                                    ci.Referenced_In.Add(new UsageRef("procedure", p.Safe_Name, "unknown"));
+                        }
                     }
                 }
 
                 foreach (var v in cat.Views.Values)
                 {
                     foreach (var r in v.Reads)
-                        if (cat.Tables.TryGetValue(r.Safe_Name, out var t))
-                            t.Referenced_By.Add(new ObjRef(v.Schema, v.Safe_Name));
+                    {
+                        // Try exact match first, then try with view's schema if unqualified
+                        if (!cat.Tables.TryGetValue(r.Safe_Name, out var t))
+                        {
+                            // If the reference lacks schema, try with the view's schema
+                            if (!r.Safe_Name.Contains("·") && !string.IsNullOrEmpty(v.Schema))
+                            {
+                                var qualifiedKey = Helpers.SafeName(v.Schema, r.Safe_Name);
+                                cat.Tables.TryGetValue(qualifiedKey, out t);
+                            }
+                        }
+                        if (t != null)
+                            t.Referenced_By.Add(new ObjRef(v.Schema, v.Safe_Name, "read"));
+                    }
 
                     if (v.Columns.Count > 0 && v.Reads.Count == 1)
                     {
                         var baseSafe = v.Reads[0].Safe_Name;
-                        if (cat.Tables.TryGetValue(baseSafe, out var t))
+                        if (!cat.Tables.TryGetValue(baseSafe, out var t))
+                        {
+                            // Try with view's schema if unqualified
+                            if (!baseSafe.Contains("·") && !string.IsNullOrEmpty(v.Schema))
+                            {
+                                var qualifiedKey = Helpers.SafeName(v.Schema, baseSafe);
+                                cat.Tables.TryGetValue(qualifiedKey, out t);
+                            }
+                        }
+                        if (t != null)
                         {
                             foreach (var c in v.Columns.Where(cn => cn != "*"))
                                 if (t.Columns.TryGetValue(c, out var ci))

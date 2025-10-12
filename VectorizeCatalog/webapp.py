@@ -1,59 +1,112 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# webapp.py
 from __future__ import annotations
-
-from pathlib import Path
-from typing import List, Dict, Any
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
-from qcat.loader import load_items, load_emb
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
+from typing import Optional, Any, Dict
+import json
+from qcat.items import load_items
+from qcat.paths import BASE, OUTPUT_DIR, ITEMS_JSON
 from qcat.agent import agent_answer
-from qcli.resolver import resolve_items_by_name
-from qcli.printers import read_sql_from_item
-from qcat.llm_intent import classify_intent
-from qcat.prompt import parse_prompt  # fallback
 
-APP_DIR = Path(__file__).resolve().parent
-STATIC_DIR = APP_DIR / "static"
+app = FastAPI()
 
-app = FastAPI(title="VectorizeCatalog", version="4.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
 
+# Serve exactly from VectorizeCatalog/static
+STATIC_DIR = BASE / "static"
+
+# /static/... -> VectorizeCatalog/static/...
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-ITEMS: List[Dict[str, Any]] = []
-EMB = None
-def _ensure_loaded():
-    global ITEMS, EMB
-    if not ITEMS: ITEMS = load_items()
-    if EMB is None: EMB = load_emb()
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-@app.get("/favicon.ico")
-def favicon():
-    return Response(status_code=204)
-
-@app.get("/")
+# / -> VectorizeCatalog/static/index.html
+@app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(str(STATIC_DIR / "index.html"))
+
+# Optional: also serve /index.html explicitly
+@app.get("/index.html", response_class=HTMLResponse)
+def index_html():
+    return FileResponse(str(STATIC_DIR / "index.html"))
+
+ITEMS, EMB = load_items()
 
 class AskBody(BaseModel):
     prompt: str
+    k: int = 10
+
+    # use alias to avoid BaseModel.schema clash
+    schema_name: str | None = Field(
+        default=None,
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+
+    pattern: str | None = None
+    name_match: str | None = None
+    include_via_views: bool = False
+    fuzzy: bool = False
+    unused_only: bool = False
+
+    # existing override support
+    intent_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("intent_override", "intent"),
+        serialization_alias="intent_override",
+    )
+
+    # NEW: whether the user accepts the agent’s proposed intent
+    accept_proposal: bool = False
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SemanticBody(BaseModel):
+    query: str
+    k: int = 10
+    kind: str | None = None
+
+    schema_name: str | None = Field(
+        default=None,
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+
+    pattern: str | None = None
+    name_match: str | None = None
+    include_via_views: bool = True
+    fuzzy: bool = False
+    unused_only: bool = False
+
+    # keep consistent; optional here
+    intent_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("intent_override", "intent"),
+        serialization_alias="intent_override",
+    )
+
+    # Optional: mirror AskBody if you also use it on /api/semantic
+    accept_proposal: bool = False
+
+    model_config = ConfigDict(populate_by_name=True)
 
 @app.post("/api/ask")
 def api_ask(body: AskBody):
-    _ensure_loaded()
     out = agent_answer(
         query=body.prompt, items=ITEMS, emb=EMB,
-        schema_filter=None, name_pattern=None,
+        schema_filter=body.schema, name_pattern=body.pattern,
+        intent_override=body.intent_override,
+        accept_proposal=body.accept_proposal,
     )
-    # IMPORTANT: return the dict unmodified (contains `answer` and maybe `unified_diff`)
-    return out if isinstance(out, dict) else {"answer": str(out)}
+    return out
+
+# Simple health
+@app.get("/api/ping")
+def ping():
+    return {"ok": True}
