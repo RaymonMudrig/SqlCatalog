@@ -21,6 +21,7 @@ INTENTS: List[str] = [
     "list_all_procedures",
     "list_all_functions",
     "compare_sql",
+    "find_similar_sql",
 ]
 
 # Human-friendly labels (optional)
@@ -42,6 +43,7 @@ INTENT_LABELS: Dict[str, str] = {
     "list_all_procedures": "List all procedures",
     "list_all_functions": "List all functions",
     "compare_sql": "Compare creation SQL of two entities",
+    "find_similar_sql": "Find entities with similar SQL to a given entity",
 }
 
 def list_intents() -> List[str]:

@@ -996,6 +996,77 @@ def compare_sql(items: List[Dict[str, Any]],
 
     return {"answer": "\n\n".join(md), "unified_diff": udiff}
 
+def find_similar_sql(items: List[Dict[str, Any]],
+                     kind: Optional[str], name: str,
+                     threshold: float = 50.0) -> List[Tuple[str, float]]:
+    """
+    Find entities with similar SQL to the given entity.
+
+    Args:
+        items: Catalog items
+        kind: Entity kind (table, view, procedure, function) or None for any
+        name: Entity name to compare against
+        threshold: Minimum similarity percentage (default: 50.0)
+
+    Returns:
+        List of (entity_name, similarity_score) tuples, sorted by similarity descending
+    """
+    print(f"[ops] find_similar_sql called with kind={kind}, name={name}, threshold={threshold}")
+
+    items = as_items_list(items)
+
+    # Resolve the source entity
+    source_it = _get_entity(items, kind, name)
+    if not source_it:
+        print(f"[ops] find_similar_sql: source entity not found")
+        return []
+
+    source_kind = (source_it.get("kind") or "").lower()
+    source_sql, _, source_disp = get_sql(items, kind, name)
+
+    if not source_sql:
+        print(f"[ops] find_similar_sql: no SQL found for source entity")
+        return []
+
+    # Format SQL for comparison
+    source_fmt = format_sql_for_diff(source_sql)
+
+    # Find all entities of the same kind
+    candidates = [it for it in items if (it.get("kind") or "").lower() == source_kind]
+
+    print(f"[ops] find_similar_sql: found {len(candidates)} candidates of kind {source_kind}")
+
+    # Compare each candidate with the source
+    results = []
+    for candidate_it in candidates:
+        candidate_name = _as_display(candidate_it)
+
+        # Skip self
+        if candidate_name.lower() == source_disp.lower():
+            continue
+
+        # Get SQL for candidate
+        candidate_sql, src = read_sql_from_item(candidate_it)
+        if not candidate_sql:
+            continue
+
+        # Format and compute similarity
+        candidate_fmt = format_sql_for_diff(candidate_sql)
+        sim = similarity_sql(items, source_it, candidate_it, source_fmt, candidate_fmt)
+
+        similarity_score = sim["overall"]
+
+        # Only include if above threshold
+        if similarity_score >= threshold:
+            results.append((candidate_name, similarity_score))
+
+    # Sort by similarity descending
+    results.sort(key=lambda x: x[1], reverse=True)
+
+    print(f"[ops] find_similar_sql: found {len(results)} entities above threshold {threshold}%")
+
+    return results
+
 # --- Pretty printer used only for comparison diffs ---
 
 # Expand keyword set so major clauses always start new lines.

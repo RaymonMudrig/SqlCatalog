@@ -22,6 +22,7 @@ __all__ = [
     "render_sql_of_entity",
     # compare
     "render_compare_sql",
+    "render_find_similar_sql",
 ]
 
 def _display_name(it: Dict[str, Any]) -> str:
@@ -158,10 +159,42 @@ def render_sql_of_entity(items: List[Dict[str, Any]], kind: Optional[str], name:
 def render_compare_sql(items: List[Dict[str, Any]],
                        left_kind: Optional[str], left_name: str,
                        right_kind: Optional[str], right_name: str) -> Dict[str, str]:
-    
+
     print(f"[formatters] render_compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
 
     return K.compare_sql(items, left_kind, left_name, right_kind, right_name)
+
+def render_find_similar_sql(items: List[Dict[str, Any]],
+                            kind: Optional[str], name: str,
+                            threshold: float = 50.0) -> str:
+    """
+    Find and render entities with similar SQL to the given entity.
+
+    Args:
+        items: Catalog items
+        kind: Entity kind (table, view, procedure, function) or None
+        name: Entity name to compare against
+        threshold: Minimum similarity percentage (default: 50.0)
+
+    Returns:
+        Formatted markdown string with results
+    """
+    print(f"[formatters] render_find_similar_sql called with kind={kind}, name={name}, threshold={threshold}")
+
+    results = K.find_similar_sql(items, kind, name, threshold)
+
+    if not results:
+        return f"No similar entities found for `{name}` with similarity >= {threshold}%."
+
+    # Build output
+    lines = [f"**Similar entities to `{name}`** (threshold: {threshold}%)"]
+    lines.append(f"Found {len(results)} similar entities:")
+    lines.append("")
+
+    for entity_name, similarity in results:
+        lines.append(f"- `{entity_name}` — **{similarity}%** similarity")
+
+    return "\n".join(lines)
 
 # --- compat wrappers for legacy list_all_* intents -------------------------
 

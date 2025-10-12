@@ -257,6 +257,40 @@ def agent_answer(
 
             return {**result, "entities": entities, "contains_sql": True}
 
+        if intent == "find_similar_sql":
+            name = L.get("name")
+            kind = L.get("kind") or "any"
+            threshold = L.get("threshold", 50.0)
+
+            # Render the similar entities
+            answer = F.render_find_similar_sql(items, kind, name, threshold)
+
+            # Add the source entity to memory
+            if kind == "any" and name:
+                # Infer kind from catalog
+                found_item = K._get_entity(K.as_items_list(items), None, name)
+                if found_item:
+                    item_kind = (found_item.get("kind") or found_item.get("Kind") or "").lower()
+                    if item_kind in ("procedure", "proc"):
+                        kind = "procedure"
+                    elif item_kind == "table":
+                        kind = "table"
+                    elif item_kind == "view":
+                        kind = "view"
+                    elif item_kind == "function":
+                        kind = "function"
+
+            if kind != "any" and name:
+                entities.append({"kind": kind, "name": name})
+
+            # Extract entities from results
+            results = K.find_similar_sql(K.as_items_list(items), kind, name, threshold)
+            for entity_name, _ in results:
+                if kind != "any":
+                    entities.append({"kind": kind, "name": entity_name})
+
+            return {"answer": answer, "entities": entities}
+
         # fallback – shouldn't happen
         return {"answer": "Sorry, I couldn't resolve your intent."}
 

@@ -231,6 +231,26 @@ TEST_CASES = [
         "expected_intent": "compare_sql",
         "validate": lambda a: contains_text(a, "compare", "similarity") or contains_text(a, "Order_Trx_Insert", "Order_Trx_Update"),
     },
+
+    # --- Find Similar SQL ---
+    {
+        "name": "find_similar_sql - existing procedure",
+        "query": "find similar sql to dbo.addClientCash",
+        "expected_intent": "find_similar_sql",
+        "validate": lambda a: contains_text(a, "similar") and not_contains_text(a, "error"),
+    },
+    {
+        "name": "find_similar_sql - shows similarity percentages",
+        "query": "find procedures with similar SQL to dbo.addClientCash",
+        "expected_intent": "find_similar_sql",
+        "validate": lambda a: contains_text(a, "%") or contains_text(a, "no similar"),
+    },
+    {
+        "name": "find_similar_sql - shows entity name",
+        "query": "which entities have similar SQL to dbo.RtBoGetOrderDone",
+        "expected_intent": "find_similar_sql",
+        "validate": lambda a: contains_text(a, "similar") and not_empty(a),
+    },
 ]
 
 
