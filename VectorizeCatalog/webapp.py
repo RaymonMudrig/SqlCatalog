@@ -1,17 +1,22 @@
 # webapp.py
 from __future__ import annotations
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Cookie
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 import json
+import uuid
 from qcat.items import load_items
 from qcat.paths import BASE, OUTPUT_DIR, ITEMS_JSON
 from qcat.agent import agent_answer
 
 app = FastAPI()
+
+# In-memory session storage for entity memory
+# session_id -> {tables: set, procedures: set, views: set, functions: set}
+SESSION_MEMORY: Dict[str, Dict[str, set]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,8 +66,11 @@ class AskBody(BaseModel):
         serialization_alias="intent_override",
     )
 
-    # NEW: whether the user accepts the agent’s proposed intent
+    # NEW: whether the user accepts the agent's proposed intent
     accept_proposal: bool = False
+
+    # Session ID for memory tracking
+    session_id: str | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -98,13 +106,59 @@ class SemanticBody(BaseModel):
 
 @app.post("/api/ask")
 def api_ask(body: AskBody):
+    # Generate session ID if not provided
+    session_id = body.session_id or str(uuid.uuid4())
+
+    # Initialize session memory if needed
+    if session_id not in SESSION_MEMORY:
+        SESSION_MEMORY[session_id] = {
+            "tables": set(),
+            "procedures": set(),
+            "views": set(),
+            "functions": set()
+        }
+
+    # Get answer from agent
     out = agent_answer(
         query=body.prompt, items=ITEMS, emb=EMB,
         schema_filter=body.schema, name_pattern=body.pattern,
         intent_override=body.intent_override,
         accept_proposal=body.accept_proposal,
     )
-    return out
+
+    # Update memory with entities from this query
+    entities = out.get("entities", [])
+    for entity in entities:
+        kind = entity.get("kind")
+        name = entity.get("name")
+        if kind and name:
+            plural = kind + "s"  # table->tables, procedure->procedures, etc
+            if plural in SESSION_MEMORY[session_id]:
+                SESSION_MEMORY[session_id][plural].add(name)
+
+    # Return memory alongside answer
+    memory = {
+        "tables": sorted(SESSION_MEMORY[session_id]["tables"]),
+        "procedures": sorted(SESSION_MEMORY[session_id]["procedures"]),
+        "views": sorted(SESSION_MEMORY[session_id]["views"]),
+        "functions": sorted(SESSION_MEMORY[session_id]["functions"])
+    }
+
+    return {**out, "session_id": session_id, "memory": memory}
+
+# Clear memory endpoint
+@app.post("/api/clear_memory")
+def clear_memory(body: Dict[str, Any]):
+    session_id = body.get("session_id")
+    if session_id and session_id in SESSION_MEMORY:
+        SESSION_MEMORY[session_id] = {
+            "tables": set(),
+            "procedures": set(),
+            "views": set(),
+            "functions": set()
+        }
+        return {"ok": True, "message": "Memory cleared"}
+    return {"ok": False, "message": "Session not found"}
 
 # Simple health
 @app.get("/api/ping")

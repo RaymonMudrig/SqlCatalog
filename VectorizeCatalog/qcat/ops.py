@@ -351,7 +351,17 @@ def _collect_list_from_keys(it: Dict[str, Any], keys: Tuple[str, ...]) -> List[s
     for k in keys:
         v = it.get(k) or _ci_get(it, k)
         if isinstance(v, list):
-            return [str(x) for x in v]
+            # Handle both string entries and dict entries with Safe_Name
+            result = []
+            for x in v:
+                if isinstance(x, dict):
+                    # Extract Safe_Name from dict entry
+                    name = x.get("Safe_Name") or x.get("safe_name")
+                    if name:
+                        result.append(str(name))
+                elif isinstance(x, str):
+                    result.append(str(x))
+            return result
         if isinstance(v, str):
             # tolerate comma-separated
             return [t.strip() for t in v.split(",") if t.strip()]

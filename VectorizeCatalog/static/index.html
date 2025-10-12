@@ -6,8 +6,155 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- Basic styles -->
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { font-weight: 600; margin-bottom: 12px; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Left sidebar for memory */
+    #sidebar {
+      width: 280px;
+      background: #f8f9fa;
+      border-right: 1px solid #dee2e6;
+      padding: 16px;
+      overflow-y: auto;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #sidebar h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 12px 0;
+      color: #495057;
+    }
+
+    /* Search box */
+    #memorySearch {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 13px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    #memorySearch:focus {
+      outline: none;
+      border-color: #0066cc;
+      box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
+    }
+
+    /* Memory sections */
+    .memory-section {
+      margin-bottom: 12px;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      background: white;
+      overflow: hidden;
+    }
+    .memory-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      cursor: pointer;
+      background: #fff;
+      transition: background-color 0.2s;
+      user-select: none;
+    }
+    .memory-section-header:hover {
+      background: #f8f9fa;
+    }
+    .memory-section-header h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #495057;
+      margin: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex: 1;
+    }
+    .memory-section-count {
+      font-size: 11px;
+      color: #6c757d;
+      background: #e9ecef;
+      padding: 2px 6px;
+      border-radius: 10px;
+      margin-right: 8px;
+    }
+    .memory-section-toggle {
+      font-size: 14px;
+      color: #6c757d;
+      transition: transform 0.2s;
+    }
+    .memory-section-toggle.collapsed {
+      transform: rotate(-90deg);
+    }
+    .memory-section-content {
+      max-height: 300px;
+      overflow-y: auto;
+      transition: max-height 0.3s ease-out;
+    }
+    .memory-section-content.collapsed {
+      max-height: 0;
+      overflow: hidden;
+    }
+    .memory-list {
+      list-style: none;
+      padding: 8px;
+      margin: 0;
+    }
+    .memory-item {
+      padding: 6px 8px;
+      margin: 2px 0;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #0066cc;
+      transition: background-color 0.2s;
+      word-break: break-word;
+    }
+    .memory-item:hover {
+      background-color: #e6f2ff;
+    }
+    .memory-item.hidden {
+      display: none;
+    }
+    .memory-empty {
+      font-size: 12px;
+      color: #adb5bd;
+      font-style: italic;
+      padding: 8px;
+    }
+    #clearMemory {
+      width: 100%;
+      padding: 8px;
+      font-size: 13px;
+      background: #dc3545;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: auto;
+    }
+    #clearMemory:hover {
+      background: #c82333;
+    }
+
+    /* Main content area */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 24px;
+    }
+
+    h1 { font-weight: 600; margin: 0 0 12px 0; }
     .bar { display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px; }
     #prompt {
       flex: 1 1 auto; min-height: 80px; padding: 10px 12px; font-size: 16px;
@@ -18,9 +165,40 @@
       border-radius: 8px; background: #0b5; color: white; cursor: pointer;
     }
     button:disabled { opacity: .6; cursor: default; }
-    .row { display: grid; grid-template-columns: 1fr; gap: 16px; }
-    @media (min-width: 1100px) { .row { grid-template-columns: 1fr; } }
+
+    #content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
     #answer { padding: 16px; border: 1px solid #eee; border-radius: 10px; }
+
+    /* SQL Code blocks */
+    #answer pre {
+      background: #fafafa;
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 12px 0;
+    }
+    #answer pre code {
+      background: transparent;
+      padding: 0;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    #answer code {
+      background: #f6f8fa;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+    }
+
     /* Diff area */
     #diffwrap { display:none; padding: 0; border: 1px solid #eee; border-radius: 10px; overflow: auto; }
     /* Fallback pre if diff2html fails */
@@ -47,29 +225,233 @@
   <!-- diff2html CSS/JS -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
-  <!-- highlight.js (optional but improves syntax colors in diff) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js/styles/github.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js/lib/highlight.js"></script>
+
+  <!-- highlight.js for SQL syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
 </head>
 <body>
-  <h1>SQL Catalog QA</h1>
+  <!-- Left Sidebar - Memory Panel -->
+  <div id="sidebar">
+    <h2>Entity Memory</h2>
 
-  <div class="bar">
-    <textarea id="prompt" placeholder="Ask anything about the catalog (e.g., compare dbo.DealOrder vs dbo.DealOrder_20May2017)"></textarea>
-    <button id="ask">Ask</button>
+    <input type="text" id="memorySearch" placeholder="Search entities..." />
+
+    <div class="memory-section" data-kind="tables">
+      <div class="memory-section-header">
+        <h3>Tables</h3>
+        <span class="memory-section-count">0</span>
+        <span class="memory-section-toggle">▼</span>
+      </div>
+      <div class="memory-section-content">
+        <ul id="memoryTables" class="memory-list">
+          <li class="memory-empty">No tables yet</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="memory-section" data-kind="procedures">
+      <div class="memory-section-header">
+        <h3>Procedures</h3>
+        <span class="memory-section-count">0</span>
+        <span class="memory-section-toggle">▼</span>
+      </div>
+      <div class="memory-section-content">
+        <ul id="memoryProcedures" class="memory-list">
+          <li class="memory-empty">No procedures yet</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="memory-section" data-kind="views">
+      <div class="memory-section-header">
+        <h3>Views</h3>
+        <span class="memory-section-count">0</span>
+        <span class="memory-section-toggle">▼</span>
+      </div>
+      <div class="memory-section-content">
+        <ul id="memoryViews" class="memory-list">
+          <li class="memory-empty">No views yet</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="memory-section" data-kind="functions">
+      <div class="memory-section-header">
+        <h3>Functions</h3>
+        <span class="memory-section-count">0</span>
+        <span class="memory-section-toggle">▼</span>
+      </div>
+      <div class="memory-section-content">
+        <ul id="memoryFunctions" class="memory-list">
+          <li class="memory-empty">No functions yet</li>
+        </ul>
+      </div>
+    </div>
+
+    <button id="clearMemory">Clear Memory</button>
   </div>
 
-  <div class="row">
-    <div id="answer"></div>
-    <div id="diffwrap">
-      <div id="diff"></div>
-      <pre id="diffpre" hidden></pre>
-      <div class="meta" id="diffmeta"></div>
+  <!-- Main Content Area -->
+  <div id="main">
+    <h1>SQL Catalog QA</h1>
+
+    <div class="bar">
+      <textarea id="prompt" placeholder="Ask anything about the catalog (e.g., compare dbo.DealOrder vs dbo.DealOrder_20May2017)"></textarea>
+      <button id="ask">Ask</button>
+    </div>
+
+    <div id="content">
+      <div id="answer"></div>
+      <div id="diffwrap">
+        <div id="diff"></div>
+        <pre id="diffpre" hidden></pre>
+        <div class="meta" id="diffmeta"></div>
+      </div>
     </div>
   </div>
 
   <script>
     const server = (new URLSearchParams(location.search)).get('server') || 'http://127.0.0.1:8000';
+    let sessionId = null;  // Track session ID across requests
+
+    // Initialize collapsible sections
+    function initCollapsible() {
+      document.querySelectorAll('.memory-section-header').forEach(header => {
+        header.addEventListener('click', function() {
+          const section = this.closest('.memory-section');
+          const content = section.querySelector('.memory-section-content');
+          const toggle = section.querySelector('.memory-section-toggle');
+
+          content.classList.toggle('collapsed');
+          toggle.classList.toggle('collapsed');
+        });
+      });
+    }
+
+    // Search functionality
+    function initSearch() {
+      const searchInput = document.getElementById('memorySearch');
+      searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase();
+
+        document.querySelectorAll('.memory-item').forEach(item => {
+          const entityName = item.getAttribute('data-entity').toLowerCase();
+          if (entityName.includes(searchTerm)) {
+            item.classList.remove('hidden');
+          } else {
+            item.classList.add('hidden');
+          }
+        });
+
+        // Update counts to reflect visible items
+        document.querySelectorAll('.memory-section').forEach(section => {
+          const listEl = section.querySelector('.memory-list');
+          const visibleCount = listEl.querySelectorAll('.memory-item:not(.hidden)').length;
+          const countEl = section.querySelector('.memory-section-count');
+          countEl.textContent = visibleCount;
+        });
+      });
+    }
+
+    // Function to update memory panel
+    function updateMemory(memory) {
+      const sections = {
+        'tables': document.getElementById('memoryTables'),
+        'procedures': document.getElementById('memoryProcedures'),
+        'views': document.getElementById('memoryViews'),
+        'functions': document.getElementById('memoryFunctions')
+      };
+
+      for (const [kind, listEl] of Object.entries(sections)) {
+        const entities = memory[kind] || [];
+        const section = listEl.closest('.memory-section');
+        const countEl = section.querySelector('.memory-section-count');
+
+        // Update count
+        countEl.textContent = entities.length;
+
+        if (entities.length === 0) {
+          listEl.innerHTML = `<li class="memory-empty">No ${kind} yet</li>`;
+        } else {
+          listEl.innerHTML = entities.map(name =>
+            `<li class="memory-item" data-entity="${name}">${name}</li>`
+          ).join('');
+        }
+      }
+
+      // Add click handlers to memory items
+      document.querySelectorAll('.memory-item').forEach(item => {
+        item.addEventListener('click', function() {
+          const entityName = this.getAttribute('data-entity');
+          const promptInput = document.getElementById('prompt');
+          const currentValue = promptInput.value.trim();
+          const wrappedText = '`' + entityName + '`';
+
+          if (currentValue) {
+            promptInput.value = currentValue + ' ' + wrappedText;
+          } else {
+            promptInput.value = wrappedText;
+          }
+
+          promptInput.focus();
+          promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+        });
+      });
+
+      // Re-apply search filter if there's a search term
+      const searchInput = document.getElementById('memorySearch');
+      if (searchInput.value) {
+        searchInput.dispatchEvent(new Event('input'));
+      }
+    }
+
+    // Function to clear memory
+    async function clearMemory() {
+      if (!sessionId) return;
+
+      try {
+        const res = await fetch(`${server}/api/clear_memory`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ session_id: sessionId })
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          // Clear UI
+          updateMemory({ tables: [], procedures: [], views: [], functions: [] });
+        }
+      } catch (e) {
+        console.error('Failed to clear memory:', e);
+      }
+    }
+
+    // Function to highlight T-SQL types that hljs might miss
+    function highlightTSQLTypes(codeBlock) {
+      const tsqlTypes = [
+        'nvarchar', 'varchar', 'nchar', 'char', 'ntext', 'text',
+        'bit', 'tinyint', 'smallint', 'int', 'bigint',
+        'numeric', 'decimal', 'money', 'smallmoney', 'float', 'real',
+        'datetime', 'datetime2', 'smalldatetime', 'date', 'time', 'datetimeoffset', 'timestamp',
+        'uniqueidentifier', 'xml', 'hierarchyid', 'sql_variant',
+        'geography', 'geometry', 'varbinary', 'binary', 'image'
+      ];
+
+      const html = codeBlock.innerHTML;
+      let modifiedHtml = html;
+
+      tsqlTypes.forEach(type => {
+        // Match the type as a whole word (case-insensitive), but not if it's already inside a span
+        const regex = new RegExp(`\\b(${type})\\b(?![^<]*>|[^<>]*</)`, 'gi');
+        modifiedHtml = modifiedHtml.replace(regex, '<span class="hljs-type">$1</span>');
+      });
+
+      if (modifiedHtml !== html) {
+        codeBlock.innerHTML = modifiedHtml;
+      }
+    }
 
     // Function to make entity names clickable
     function makeEntitiesClickable(element) {
@@ -143,13 +525,58 @@
         const res = await fetch(`${server}/api/ask`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ prompt })
+          body: JSON.stringify({ prompt, session_id: sessionId })
         });
         const data = await res.json();
+
+        // Update session ID and memory
+        if (data.session_id) {
+          sessionId = data.session_id;
+        }
+        if (data.memory) {
+          updateMemory(data.memory);
+        }
 
         // Render markdown "answer"
         const md = (data && data.answer) ? data.answer : '(no answer)';
         answerEl.innerHTML = marked.parse(md);
+
+        // Apply syntax highlighting to SQL code blocks
+        if (typeof hljs !== 'undefined') {
+          const codeBlocks = answerEl.querySelectorAll('pre code');
+
+          codeBlocks.forEach(block => {
+            // If backend indicates this response contains SQL, force SQL highlighting
+            if (data.contains_sql) {
+              block.className = 'language-sql';
+              delete block.dataset.highlighted; // Remove any existing highlight flag
+              try {
+                hljs.highlightElement(block);
+                // Post-process to highlight T-SQL types that hljs missed
+                highlightTSQLTypes(block);
+              } catch (e) {
+                console.error('Syntax highlighting failed:', e);
+              }
+            } else {
+              // For non-SQL responses, only highlight if it has language class or looks like SQL
+              const content = block.textContent.toLowerCase();
+              const isSQL = block.classList.contains('language-sql') ||
+                           content.includes('select') || content.includes('create') || content.includes('insert') ||
+                           content.includes('update') || content.includes('delete') || content.includes('from') ||
+                           content.includes('alter') || content.includes('drop') || content.includes('declare');
+
+              if (isSQL) {
+                block.classList.add('language-sql');
+                delete block.dataset.highlighted;
+                try {
+                  hljs.highlightElement(block);
+                } catch (e) {
+                  console.error('Syntax highlighting failed:', e);
+                }
+              }
+            }
+          });
+        }
 
         // Make entity names clickable
         makeEntitiesClickable(answerEl);
@@ -168,7 +595,15 @@
             diffPre.hidden = true;
             diffMeta.textContent = 'Rendered by diff2html';
             // Optionally highlight SQL blocks inside the diff
-            document.querySelectorAll('#diff code').forEach(el => { try { hljs.highlightElement(el); } catch {} });
+            if (typeof hljs !== 'undefined') {
+              document.querySelectorAll('#diff code').forEach(el => {
+                try {
+                  hljs.highlightElement(el);
+                } catch (e) {
+                  console.error('Diff highlighting failed:', e);
+                }
+              });
+            }
           } catch (e) {
             // Fallback: show raw unified diff in <pre>
             diffEl.innerHTML = '';
@@ -190,6 +625,11 @@
     document.getElementById('prompt').addEventListener('keydown', (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') ask();
     });
+    document.getElementById('clearMemory').addEventListener('click', clearMemory);
+
+    // Initialize collapsible and search on page load
+    initCollapsible();
+    initSearch();
   </script>
 </body>
 </html>
