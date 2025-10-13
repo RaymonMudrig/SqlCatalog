@@ -54,20 +54,106 @@ namespace SqlCatalog
         }
 
         // ---------- Reads / Writes helpers ----------
-        public static void AddRead(HashSet<string> seen, List<ObjRef> reads, SchemaObjectName schemaObject)
+
+        /// <summary>
+        /// Check if a table name is likely an alias rather than a real table.
+        /// Heuristics: single character names, very short names without schema.
+        /// </summary>
+        public static bool IsLikelyAlias(string safeName)
         {
-            var (_, _, safe) = NameOf(schemaObject);
-            if (safe.Length == 0 || !seen.Add(safe)) return;
-            reads.Add(new ObjRef(schemaObject.SchemaIdentifier?.Value, safe));
+            if (string.IsNullOrWhiteSpace(safeName)) return true;
+
+            // Single character is very likely an alias (a, b, c, etc.)
+            if (safeName.Length == 1) return true;
+
+            // Check if it has a schema separator (Config.SafeSpace character)
+            var parts = safeName.Split(Config.SafeSpace);
+            if (parts.Length > 1)
+            {
+                // Has schema prefix - check the table part
+                var tablePart = parts[^1];
+                if (tablePart.Length <= 1) return true;
+            }
+            else
+            {
+                // No schema prefix and very short (2 chars or less) is suspicious
+                if (safeName.Length <= 2) return true;
+            }
+
+            return false;
         }
 
-        public static void AddTargetWrite(TableReference? target, List<ObjRef> writes, HashSet<string> seen)
+        /// <summary>
+        /// Resolve schema for a table by looking it up in the catalog.
+        /// Returns the schema from the catalog, or the provided schema if not found.
+        /// </summary>
+        public static string? ResolveSchema(Catalog catalog, string? providedSchema, string tableName)
+        {
+            // If schema was explicitly provided, use it
+            if (!string.IsNullOrWhiteSpace(providedSchema))
+                return providedSchema;
+
+            // Extract just the table name (without schema) for lookup
+            // The safeName might be just "Holiday" but catalog keys are "dbo.Holiday"
+            var parts = tableName.Split(Config.SafeSpace);
+            var bareTableName = parts.Length > 1 ? parts[^1] : tableName;
+
+            // Try common schema prefixes: dbo, then others
+            var schemasToTry = new[] { "dbo", "EIPO", "BondFund", "WebTrading" };
+
+            foreach (var schema in schemasToTry)
+            {
+                var qualified = SafeName(schema, bareTableName);
+
+                // Try tables
+                if (catalog.Tables.TryGetValue(qualified, out var table))
+                    return table.Schema;
+
+                // Try views
+                if (catalog.Views.TryGetValue(qualified, out var view))
+                    return view.Schema;
+            }
+
+            // Try without schema qualification (in case the table name itself had no schema)
+            if (catalog.Tables.TryGetValue(tableName, out var t))
+                return t.Schema;
+
+            if (catalog.Views.TryGetValue(tableName, out var v))
+                return v.Schema;
+
+            // Not found - return null (will be handled by caller)
+            return null;
+        }
+
+        public static void AddRead(Catalog catalog, HashSet<string> seen, List<ObjRef> reads, SchemaObjectName schemaObject)
+        {
+            var (schema, _, safe) = NameOf(schemaObject);
+            if (safe.Length == 0 || !seen.Add(safe)) return;
+
+            // Filter out likely aliases (e.g., "a", "b", "c" from FROM table AS a)
+            if (IsLikelyAlias(safe)) return;
+
+            // Resolve schema from catalog if not provided in SQL
+            var resolvedSchema = ResolveSchema(catalog, schema, safe);
+
+            reads.Add(new ObjRef(resolvedSchema, safe));
+        }
+
+        public static void AddTargetWrite(Catalog catalog, TableReference? target, List<ObjRef> writes, HashSet<string> seen)
         {
             if (target is NamedTableReference ntr && ntr.SchemaObject != null)
             {
-                var (s, _, safe) = NameOf(ntr.SchemaObject);
+                var (schema, _, safe) = NameOf(ntr.SchemaObject);
                 if (seen.Add(safe))
-                    writes.Add(new ObjRef(s, safe));
+                {
+                    // Filter out likely aliases
+                    if (IsLikelyAlias(safe)) return;
+
+                    // Resolve schema from catalog if not provided in SQL
+                    var resolvedSchema = ResolveSchema(catalog, schema, safe);
+
+                    writes.Add(new ObjRef(resolvedSchema, safe));
+                }
             }
         }
 

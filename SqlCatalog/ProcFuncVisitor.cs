@@ -37,11 +37,11 @@ namespace SqlCatalog
             // Reads (and collect aliases)
             foreach (var nt in DomExtensions.GetDescendants<NamedTableReference>(node))
             {
-                Helpers.AddRead(seenR, p.Reads, nt.SchemaObject);
-
-                // Track alias -> table mapping
                 if (nt.SchemaObject != null)
                 {
+                    Helpers.AddRead(_cat, seenR, p.Reads, nt.SchemaObject);
+
+                    // Track alias -> table mapping
                     var (tschema, tname, tsafe) = Helpers.NameOf(nt.SchemaObject);
                     var alias = nt.Alias?.Value ?? tname; // Use alias if present, otherwise table name
                     if (!string.IsNullOrWhiteSpace(alias))
@@ -51,13 +51,13 @@ namespace SqlCatalog
 
             // Writes: INSERT / UPDATE / DELETE
             foreach (var ins in DomExtensions.GetDescendants<InsertStatement>(node))
-                Helpers.AddTargetWrite(ins.InsertSpecification?.Target, p.Writes, seenW);
+                Helpers.AddTargetWrite(_cat, ins.InsertSpecification?.Target, p.Writes, seenW);
 
             foreach (var upd in DomExtensions.GetDescendants<UpdateStatement>(node))
-                Helpers.AddTargetWrite(upd.UpdateSpecification?.Target, p.Writes, seenW);
+                Helpers.AddTargetWrite(_cat, upd.UpdateSpecification?.Target, p.Writes, seenW);
 
             foreach (var del in DomExtensions.GetDescendants<DeleteStatement>(node))
-                Helpers.AddTargetWrite(del.DeleteSpecification?.Target, p.Writes, seenW);
+                Helpers.AddTargetWrite(_cat, del.DeleteSpecification?.Target, p.Writes, seenW);
 
             // Calls (EXEC ...)
             foreach (var ex in DomExtensions.GetDescendants<ExecuteStatement>(node))
