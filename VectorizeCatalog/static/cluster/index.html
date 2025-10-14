@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Cluster Editor Prototype</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/cluster-ui/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Cluster Editor Prototype</h1>
+    <div class="actions">
+      <form id="command-form" class="command-form">
+        <input id="command-input" type="text" placeholder="Command console: e.g., move group PG5 to cluster C2" />
+        <button type="submit" title="Run command">▶</button>
+      </form>
+    </div>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <div class="tab-header">
+        <button class="sidebar-tab active" data-tab="clusters">Clusters</button>
+        <button class="sidebar-tab" data-tab="rename">Rename</button>
+      </div>
+      <div class="tab-panel active" id="tab-clusters">
+        <ul id="cluster-list" class="list fill"></ul>
+      </div>
+      <div class="tab-panel" id="tab-rename">
+        <section id="rename-cluster-section" class="hidden">
+          <h3>Rename Cluster</h3>
+          <form id="rename-cluster-form-sidebar">
+            <label>
+              Cluster
+              <select id="rename-cluster-select"></select>
+            </label>
+            <input id="rename-cluster-input-sidebar" type="text" required />
+            <button type="submit" title="Rename cluster">✓</button>
+          </form>
+        </section>
+        <section id="rename-group-section" class="hidden">
+          <h3>Rename Group</h3>
+          <form id="rename-group-form">
+            <label>
+              Group
+              <select id="rename-group-select"></select>
+            </label>
+            <input id="rename-group-input" type="text" required />
+            <button type="submit">Rename</button>
+          </form>
+        </section>
+        <section id="move-group-section" class="hidden">
+          <h3>Move Group</h3>
+          <form id="move-group-form">
+            <label>
+              Group
+              <select id="move-group-select"></select>
+            </label>
+            <label>
+              Target Cluster
+              <select id="move-group-target"></select>
+            </label>
+            <button type="submit">Move Group</button>
+          </form>
+        </section>
+        <section id="move-procedure-section" class="hidden">
+          <h3>Move Procedure</h3>
+          <form id="move-procedure-form">
+            <label>
+              Procedure
+              <select id="move-procedure-select"></select>
+            </label>
+            <label>
+              Target Cluster
+              <select id="move-procedure-target"></select>
+            </label>
+            <button type="submit">Move Procedure</button>
+          </form>
+        </section>
+        <p class="hint" id="rename-tab-hint">Click a cluster, procedure, or group in the diagram to show controls.</p>
+      </div>
+    </aside>
+
+    <section id="summary-view" class="panel">
+      <div class="panel-header">
+        <h2>Summary Overview</h2>
+        <div class="header-controls">
+          <button id="refresh-summary" type="button">Refresh Summary</button>
+          <button id="reload-snapshot" type="button">Reload from Snapshot</button>
+          <div class="zoom-controls" data-target="summary">
+            <button type="button" data-zoom="in">+</button>
+            <button type="button" data-zoom="out">−</button>
+            <button type="button" data-zoom="reset" title="Reset zoom">⊙</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint">Click to highlight connections, double-click cluster to view details. Highlighted tables are shared across clusters.</p>
+      <div class="graph-container zoomable" id="summary-graph" data-zoom-level="1">
+        <div class="graph-content"></div>
+      </div>
+    </section>
+
+    <section id="detail-view" class="panel hidden">
+      <div class="detail-columns">
+        <div class="diagram-panel">
+          <div class="diagram-header">
+            <button id="back-button" type="button">&larr; Back to Summary</button>
+            <h2 id="cluster-title">Cluster</h2>
+            <form id="rename-cluster-form" class="rename-cluster-form">
+              <input id="rename-cluster-input" type="text" placeholder="Rename cluster..." required />
+              <button type="submit" title="Rename cluster">✓</button>
+            </form>
+            <div class="zoom-controls" data-target="cluster">
+              <button type="button" data-zoom="in">+</button>
+              <button type="button" data-zoom="out">−</button>
+              <button type="button" data-zoom="reset" title="Reset zoom">⊙</button>
+            </div>
+          </div>
+          <p class="hint">Click procedure/group to select and highlight connections. Click empty area to clear.</p>
+          <div class="graph-container zoomable" id="cluster-graph" data-zoom-level="1">
+            <div class="graph-content"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div id="status-message" role="status"></div>
+    <div id="timestamp"></div>
+  </footer>
+
+  <script type="module" src="/cluster-ui/app.js"></script>
+</body>
+</html>

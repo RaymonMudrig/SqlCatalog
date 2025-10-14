@@ -125,36 +125,47 @@ namespace SqlCatalog
             return null;
         }
 
+        public static (string? Schema, string Safe) CanonicalTableKey(Catalog catalog, string schema, string tableName)
+        {
+            var rawSafe = SafeName(schema, tableName);
+            var resolvedSchema = ResolveSchema(catalog, schema, rawSafe);
+
+            var finalSchema = !string.IsNullOrWhiteSpace(resolvedSchema)
+                ? resolvedSchema
+                : (!string.IsNullOrWhiteSpace(schema) ? schema : null);
+
+            var finalSafe = SafeName(finalSchema, tableName);
+            return (finalSchema, finalSafe);
+        }
+
         public static void AddRead(Catalog catalog, HashSet<string> seen, List<ObjRef> reads, SchemaObjectName schemaObject)
         {
-            var (schema, _, safe) = NameOf(schemaObject);
-            if (safe.Length == 0 || !seen.Add(safe)) return;
+            var (schema, name, rawSafe) = NameOf(schemaObject);
+            if (string.IsNullOrWhiteSpace(name)) return;
 
             // Filter out likely aliases (e.g., "a", "b", "c" from FROM table AS a)
-            if (IsLikelyAlias(safe)) return;
+            if (IsLikelyAlias(rawSafe)) return;
 
-            // Resolve schema from catalog if not provided in SQL
-            var resolvedSchema = ResolveSchema(catalog, schema, safe);
+            var (resolvedSchema, canonicalSafe) = CanonicalTableKey(catalog, schema, name);
+            if (!seen.Add(canonicalSafe)) return;
 
-            reads.Add(new ObjRef(resolvedSchema, safe));
+            reads.Add(new ObjRef(resolvedSchema, canonicalSafe));
         }
 
         public static void AddTargetWrite(Catalog catalog, TableReference? target, List<ObjRef> writes, HashSet<string> seen)
         {
-            if (target is NamedTableReference ntr && ntr.SchemaObject != null)
-            {
-                var (schema, _, safe) = NameOf(ntr.SchemaObject);
-                if (seen.Add(safe))
-                {
-                    // Filter out likely aliases
-                    if (IsLikelyAlias(safe)) return;
+            if (target is not NamedTableReference { SchemaObject: not null } ntr)
+                return;
 
-                    // Resolve schema from catalog if not provided in SQL
-                    var resolvedSchema = ResolveSchema(catalog, schema, safe);
+            var (schema, name, rawSafe) = NameOf(ntr.SchemaObject);
+            if (string.IsNullOrWhiteSpace(name)) return;
 
-                    writes.Add(new ObjRef(resolvedSchema, safe));
-                }
-            }
+            if (IsLikelyAlias(rawSafe)) return;
+
+            var (resolvedSchema, canonicalSafe) = CanonicalTableKey(catalog, schema, name);
+            if (!seen.Add(canonicalSafe)) return;
+
+            writes.Add(new ObjRef(resolvedSchema, canonicalSafe));
         }
 
         // ---------- Types & defaults ----------

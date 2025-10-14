@@ -53,6 +53,10 @@ namespace SqlCatalog
                 // ---------- Post-pass: propagate usage ----------
                 foreach (var p in cat.Procedures.Values)
                 {
+                    DeduplicateRefs(p.Reads);
+                    DeduplicateRefs(p.Writes);
+                    DeduplicateRefs(p.Calls);
+
                     // Process reads
                     foreach (var r in p.Reads)
                     {
@@ -168,6 +172,17 @@ namespace SqlCatalog
             {
                 Console.Error.WriteLine(ex);
                 return 1;
+            }
+        }
+
+        static void DeduplicateRefs(List<ObjRef> refs)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = refs.Count - 1; i >= 0; i--)
+            {
+                var key = refs[i]?.Safe_Name ?? "";
+                if (!seen.Add(key))
+                    refs.RemoveAt(i);
             }
         }
     }

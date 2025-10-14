@@ -37,16 +37,15 @@ namespace SqlCatalog
             // Reads (and collect aliases)
             foreach (var nt in DomExtensions.GetDescendants<NamedTableReference>(node))
             {
-                if (nt.SchemaObject != null)
-                {
-                    Helpers.AddRead(_cat, seenR, p.Reads, nt.SchemaObject);
+                if (nt.SchemaObject == null) continue;
 
-                    // Track alias -> table mapping
-                    var (tschema, tname, tsafe) = Helpers.NameOf(nt.SchemaObject);
-                    var alias = nt.Alias?.Value ?? tname; // Use alias if present, otherwise table name
-                    if (!string.IsNullOrWhiteSpace(alias))
-                        aliasMap[alias] = tsafe;
-                }
+                Helpers.AddRead(_cat, seenR, p.Reads, nt.SchemaObject);
+
+                var (tschema, tname, _) = Helpers.NameOf(nt.SchemaObject);
+                var (_, canonicalSafe) = Helpers.CanonicalTableKey(_cat, tschema, tname);
+                var alias = nt.Alias?.Value ?? tname; // Use alias if present, otherwise table name
+                if (!string.IsNullOrWhiteSpace(alias))
+                    aliasMap[alias] = canonicalSafe;
             }
 
             // Writes: INSERT / UPDATE / DELETE
@@ -123,8 +122,9 @@ namespace SqlCatalog
                 // Get the target table name
                 if (target is NamedTableReference ntr)
                 {
-                    var (_, tname, tsafe) = Helpers.NameOf(ntr.SchemaObject);
-                    targetTable = tsafe;
+                    var (tschema, tname, _) = Helpers.NameOf(ntr.SchemaObject);
+                    var (_, canonicalSafe) = Helpers.CanonicalTableKey(_cat, tschema, tname);
+                    targetTable = canonicalSafe;
                 }
 
                 if (string.IsNullOrWhiteSpace(targetTable))
@@ -156,8 +156,9 @@ namespace SqlCatalog
                 // Get the target table name
                 if (target is NamedTableReference ntr)
                 {
-                    var (_, tname, tsafe) = Helpers.NameOf(ntr.SchemaObject);
-                    targetTable = tsafe;
+                    var (tschema, tname, _) = Helpers.NameOf(ntr.SchemaObject);
+                    var (_, canonicalSafe) = Helpers.CanonicalTableKey(_cat, tschema, tname);
+                    targetTable = canonicalSafe;
                 }
 
                 if (string.IsNullOrWhiteSpace(targetTable))
