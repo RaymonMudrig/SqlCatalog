@@ -494,7 +494,7 @@ class ClusterState:
                 # Check if table is missing
                 if table in self.missing_tables:
                     prefix = "tableX::"
-                    fillcolor = "#FFCDD2"  # Light red color for missing tables
+                    fillcolor = "#9E9E9E"  # Gray color for missing tables
                     missing_label = self._escape_label(f"{table}\n(missing)")
                     lines.append(
                         f'  "{table}" [shape=box,style="filled,bold",fillcolor="{fillcolor}",penwidth=2,'
@@ -542,7 +542,7 @@ class ClusterState:
                 label = self._escape_label(table)
                 orphaned_label = self._escape_label(f"{table}\n(orphaned)")
                 lines.append(
-                    f'  "{table}" [shape=box,style="filled,dashed",fillcolor="#E0E0E0",penwidth=1,'
+                    f'  "{table}" [shape=box,style="filled,dashed",fillcolor="#FF9800",penwidth=1,'
                     f'id="tableO::{table}",label="{orphaned_label}"];'
                 )
 
@@ -571,7 +571,7 @@ class ClusterState:
             # Check if table is missing
             if table in self.missing_tables:
                 prefix = "tableX::"
-                fillcolor = "#FFCDD2"  # Light red color for missing tables
+                fillcolor = "#9E9E9E"  # Gray color for missing tables
                 missing_label = self._escape_label(f"{table}\n(missing)")
                 lines.append(
                     f'  "{table}" [shape=box,style="filled,bold",fillcolor="{fillcolor}",penwidth=2,'
