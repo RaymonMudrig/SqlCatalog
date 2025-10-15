@@ -108,6 +108,8 @@ class ClusterState:
         cluster_order: List[str],
         group_order: List[str],
         global_tables: Set[str],
+        missing_tables: Set[str],
+        orphaned_tables: Set[str],
         similarity_edges: List[SimilarityEdge],
         parameters: Dict[str, Any],
         catalog_path: Optional[str],
@@ -117,6 +119,8 @@ class ClusterState:
         self.cluster_order = cluster_order
         self.group_order = group_order
         self.global_tables = set(global_tables)
+        self.missing_tables = set(missing_tables)
+        self.orphaned_tables = set(orphaned_tables)
         self.similarity_edges = similarity_edges
         self.parameters = parameters or {}
         self.catalog_path = catalog_path
@@ -177,12 +181,23 @@ class ClusterState:
         parameters = payload.get("parameters", {})
         catalog_path = payload.get("catalog_path")
 
+        # Load missing tables from table_nodes if available
+        missing_tables: Set[str] = set()
+        orphaned_tables: Set[str] = set()
+        for table_node in payload.get("table_nodes", []):
+            if table_node.get("is_missing", False):
+                missing_tables.add(table_node["table"])
+            if table_node.get("is_orphaned", False):
+                orphaned_tables.add(table_node["table"])
+
         return cls(
             clusters=clusters,
             groups=groups,
             cluster_order=cluster_order,
             group_order=group_order,
             global_tables=global_tables,
+            missing_tables=missing_tables,
+            orphaned_tables=orphaned_tables,
             similarity_edges=similarity_edges,
             parameters=parameters,
             catalog_path=catalog_path,
@@ -390,13 +405,25 @@ class ClusterState:
             table for table, clusters in table_cluster_map.items() if len(clusters) >= min_global_clusters
         }
 
+        # Build table_nodes including missing and orphaned flags
         self.table_nodes = [
             {
                 "table": table,
                 "usage_count": self.table_usage[table],
                 "is_global": table in self.global_tables,
+                "is_missing": table in self.missing_tables,
+                "is_orphaned": False,  # Used tables can't be orphaned
             }
             for table in sorted(self.table_usage.keys())
+        ] + [
+            {
+                "table": table,
+                "usage_count": 0,
+                "is_global": False,
+                "is_missing": False,
+                "is_orphaned": True,
+            }
+            for table in sorted(self.orphaned_tables)
         ]
 
         self.procedure_table_edges = [
@@ -464,10 +491,20 @@ class ClusterState:
             lines.append("  // Global tables referenced by multiple clusters")
             for table in sorted(self.global_tables):
                 label = self._escape_label(table)
-                lines.append(
-                    f'  "{table}" [shape=box,style="filled,bold",fillcolor="#FFF2CC",penwidth=2,'
-                    f'id="table::{table}",label="{label}"];'
-                )
+                # Check if table is missing
+                if table in self.missing_tables:
+                    prefix = "tableX::"
+                    fillcolor = "#FFCDD2"  # Light red color for missing tables
+                    missing_label = self._escape_label(f"{table}\n(missing)")
+                    lines.append(
+                        f'  "{table}" [shape=box,style="filled,bold",fillcolor="{fillcolor}",penwidth=2,'
+                        f'id="{prefix}{table}",label="{missing_label}"];'
+                    )
+                else:
+                    lines.append(
+                        f'  "{table}" [shape=box,style="filled,bold",fillcolor="#FFF2CC",penwidth=2,'
+                        f'id="table::{table}",label="{label}"];'
+                    )
             lines.append("")
 
         lines.append("  // Cluster nodes")
@@ -476,18 +513,38 @@ class ClusterState:
             if not cluster:
                 continue
             display = cluster.display_name or cluster.cluster_id
+            # Count only non-singleton groups (singletons are just standalone procedures)
+            non_singleton_count = sum(
+                1 for gid in cluster.group_ids
+                if gid in self.groups and not self.groups[gid].is_singleton
+            )
+            # Use icons instead of text labels:
+            # ⚙ for procedures, ◉ for groups, ▭ for tables
+            # Escape each part individually, then join with literal \n for DOT format
             label_lines = [
                 self._escape_label(display),
-                f"({cluster.cluster_id})",
-                f"procedures: {cluster.procedure_count}",
-                f"groups: {len(cluster.group_ids)}",
+                self._escape_label(f"({cluster.cluster_id})"),
+                self._escape_label(f"⚙ {cluster.procedure_count}  ◉ {non_singleton_count}  ▭ {len(cluster.tables)}"),
             ]
-            label = "\n".join(label_lines)
-            safe_label = self._escape_label(label)
+            safe_label = "\\n".join(label_lines)
+            # Add tooltip attribute to ensure Graphviz generates <title> element in SVG
+            # Use cluster:: prefix for consistent entity type detection
             lines.append(
                 f'  "{cluster.cluster_id}" [shape=box,style="rounded,filled",fillcolor="#E1BEE7",'
-                f'id="{cluster.cluster_id}",URL="cluster://{cluster.cluster_id}",label="{safe_label}"];'
+                f'id="cluster::{cluster.cluster_id}",URL="cluster://{cluster.cluster_id}",tooltip="{cluster.cluster_id}",label="{safe_label}"];'
             )
+
+        # Add orphaned tables if any
+        if self.orphaned_tables:
+            lines.append("")
+            lines.append("  // Orphaned tables (unused)")
+            for table in sorted(self.orphaned_tables):
+                label = self._escape_label(table)
+                orphaned_label = self._escape_label(f"{table}\n(orphaned)")
+                lines.append(
+                    f'  "{table}" [shape=box,style="filled,dashed",fillcolor="#E0E0E0",penwidth=1,'
+                    f'id="tableO::{table}",label="{orphaned_label}"];'
+                )
 
         lines.append("")
         lines.append("  // Cluster-to-global-table edges")
@@ -511,7 +568,16 @@ class ClusterState:
         lines.append("  // Table nodes")
         for table in cluster.tables:
             label = self._escape_label(table)
-            if table in self.global_tables:
+            # Check if table is missing
+            if table in self.missing_tables:
+                prefix = "tableX::"
+                fillcolor = "#FFCDD2"  # Light red color for missing tables
+                missing_label = self._escape_label(f"{table}\n(missing)")
+                lines.append(
+                    f'  "{table}" [shape=box,style="filled,bold",fillcolor="{fillcolor}",penwidth=2,'
+                    f'id="{prefix}{table}",label="{missing_label}"];'
+                )
+            elif table in self.global_tables:
                 global_label = self._escape_label(f"{table}\n(global)")
                 lines.append(
                     f'  "{table}" [shape=box,style="filled,bold",fillcolor="#FFF2CC",penwidth=2,'
@@ -533,7 +599,7 @@ class ClusterState:
             if group.is_singleton:
                 lines.append(
                     f'  "{group.group_id}" [shape=box,style="rounded,filled",fillcolor="#E8F5E9",'
-                    f'id="{group.group_id}",label="{safe_display}"];'
+                    f'id="pg::{group.group_id}",label="{safe_display}"];'
                 )
             else:
                 procedures_label = "\n".join(group.procedures)
@@ -541,7 +607,7 @@ class ClusterState:
                 safe_label = self._escape_label(label)
                 lines.append(
                     f'  "{group.group_id}" [shape=box,style="rounded,filled",fillcolor="#F9E2E7",'
-                    f'id="{group.group_id}",label="{safe_label}"];'
+                    f'id="pg::{group.group_id}",label="{safe_label}"];'
                 )
 
         lines.append("")

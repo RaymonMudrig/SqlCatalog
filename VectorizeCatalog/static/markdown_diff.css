@@ -1,0 +1,57 @@
+/* ============================================================================
+   MARKDOWN & CODE STYLING
+   ============================================================================ */
+
+#content-area pre {
+  background: #fafafa;
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+#content-area pre code {
+  background: transparent;
+  padding: 0;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#content-area code {
+  background: #f6f8fa;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+}
+
+/* Clickable entities */
+.clickable-entity {
+  cursor: pointer;
+  color: #0066cc;
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background-color 0.2s;
+  display: inline-block;
+}
+
+.clickable-entity:hover {
+  background-color: #e6f2ff;
+  text-decoration: underline;
+}
+
+/* Diff container */
+.diff-container {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  background: white;
+}
+
+.diff-container .d2h-wrapper {
+  border: none;
+}

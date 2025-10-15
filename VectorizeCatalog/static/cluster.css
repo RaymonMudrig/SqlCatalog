@@ -1,0 +1,141 @@
+/* ============================================================================
+   CLUSTER CONTROLS
+   ============================================================================ */
+
+.cluster-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.cluster-header {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.cluster-breadcrumb {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cluster-breadcrumb a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.cluster-breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.cluster-breadcrumb .separator {
+  margin: 0 0.5rem;
+  color: var(--text-muted);
+}
+
+.cluster-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.cluster-controls button {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.cluster-controls button:hover {
+  background: var(--accent-hover);
+}
+
+.cluster-controls button.secondary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.cluster-controls button.secondary:hover {
+  background: #e5e7eb;
+}
+
+.rename-control {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.rename-control input {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 200px;
+}
+
+.rename-control input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Zoom controls in header */
+.cluster-header .zoom-controls {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+
+.cluster-header .zoom-controls button {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  background: white;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.cluster-header .zoom-controls button:hover {
+  background: var(--bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cluster-header .zoom-controls button:active {
+  transform: scale(0.95);
+}
+
+.cluster-header .zoom-level {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 0 0.5rem;
+  min-width: 3rem;
+  user-select: none;
+}
+

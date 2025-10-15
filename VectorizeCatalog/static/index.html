@@ -1,635 +1,171 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>SQL Catalog QA</title>
+  <title>SQL Catalog Analysis</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- Basic styles -->
-  <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      margin: 0;
-      display: flex;
-      height: 100vh;
-      overflow: hidden;
-    }
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/cluster.css" />
+  <link rel="stylesheet" href="/static/diagram.css" />
+  <link rel="stylesheet" href="/static/markdown_diff.css" />
 
-    /* Left sidebar for memory */
-    #sidebar {
-      width: 280px;
-      background: #f8f9fa;
-      border-right: 1px solid #dee2e6;
-      padding: 16px;
-      overflow-y: auto;
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-    }
-    #sidebar h2 {
-      font-size: 16px;
-      font-weight: 600;
-      margin: 0 0 12px 0;
-      color: #495057;
-    }
-
-    /* Search box */
-    #memorySearch {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 1px solid #ced4da;
-      border-radius: 4px;
-      margin-bottom: 12px;
-      box-sizing: border-box;
-    }
-    #memorySearch:focus {
-      outline: none;
-      border-color: #0066cc;
-      box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
-    }
-
-    /* Memory sections */
-    .memory-section {
-      margin-bottom: 12px;
-      border: 1px solid #dee2e6;
-      border-radius: 6px;
-      background: white;
-      overflow: hidden;
-    }
-    .memory-section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px;
-      cursor: pointer;
-      background: #fff;
-      transition: background-color 0.2s;
-      user-select: none;
-    }
-    .memory-section-header:hover {
-      background: #f8f9fa;
-    }
-    .memory-section-header h3 {
-      font-size: 13px;
-      font-weight: 600;
-      color: #495057;
-      margin: 0;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      flex: 1;
-    }
-    .memory-section-count {
-      font-size: 11px;
-      color: #6c757d;
-      background: #e9ecef;
-      padding: 2px 6px;
-      border-radius: 10px;
-      margin-right: 8px;
-    }
-    .memory-section-toggle {
-      font-size: 14px;
-      color: #6c757d;
-      transition: transform 0.2s;
-    }
-    .memory-section-toggle.collapsed {
-      transform: rotate(-90deg);
-    }
-    .memory-section-content {
-      max-height: 300px;
-      overflow-y: auto;
-      transition: max-height 0.3s ease-out;
-    }
-    .memory-section-content.collapsed {
-      max-height: 0;
-      overflow: hidden;
-    }
-    .memory-list {
-      list-style: none;
-      padding: 8px;
-      margin: 0;
-    }
-    .memory-item {
-      padding: 6px 8px;
-      margin: 2px 0;
-      cursor: pointer;
-      border-radius: 4px;
-      font-size: 12px;
-      color: #0066cc;
-      transition: background-color 0.2s;
-      word-break: break-word;
-    }
-    .memory-item:hover {
-      background-color: #e6f2ff;
-    }
-    .memory-item.hidden {
-      display: none;
-    }
-    .memory-empty {
-      font-size: 12px;
-      color: #adb5bd;
-      font-style: italic;
-      padding: 8px;
-    }
-    #clearMemory {
-      width: 100%;
-      padding: 8px;
-      font-size: 13px;
-      background: #dc3545;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      margin-top: auto;
-    }
-    #clearMemory:hover {
-      background: #c82333;
-    }
-
-    /* Main content area */
-    #main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      padding: 24px;
-    }
-
-    h1 { font-weight: 600; margin: 0 0 12px 0; }
-    .bar { display: flex; gap: 8px; align-items: stretch; margin-bottom: 12px; }
-    #prompt {
-      flex: 1 1 auto; min-height: 80px; padding: 10px 12px; font-size: 16px;
-      border: 1px solid #ccc; border-radius: 8px; resize: vertical;
-    }
-    button {
-      flex: 0 0 auto; padding: 10px 14px; font-size: 16px; border: none;
-      border-radius: 8px; background: #0b5; color: white; cursor: pointer;
-    }
-    button:disabled { opacity: .6; cursor: default; }
-
-    #content {
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    #answer { padding: 16px; border: 1px solid #eee; border-radius: 10px; }
-
-    /* SQL Code blocks */
-    #answer pre {
-      background: #fafafa;
-      border: 1px solid #e1e4e8;
-      border-radius: 6px;
-      padding: 16px;
-      overflow-x: auto;
-      margin: 12px 0;
-    }
-    #answer pre code {
-      background: transparent;
-      padding: 0;
-      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    #answer code {
-      background: #f6f8fa;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-      font-size: 13px;
-    }
-
-    /* Diff area */
-    #diffwrap { display:none; padding: 0; border: 1px solid #eee; border-radius: 10px; overflow: auto; }
-    /* Fallback pre if diff2html fails */
-    #diffpre { white-space: pre-wrap; padding: 16px; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .meta { color: #666; font-size: 13px; margin: 8px 0 0; }
-    /* Clickable entities */
-    .clickable-entity {
-      cursor: pointer;
-      color: #0066cc;
-      text-decoration: none;
-      padding: 2px 4px;
-      border-radius: 3px;
-      transition: background-color 0.2s;
-    }
-    .clickable-entity:hover {
-      background-color: #e6f2ff;
-      text-decoration: underline;
-    }
-  </style>
-
-  <!-- marked.js for markdown rendering -->
+  <!-- Markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" crossorigin="anonymous"></script>
 
-  <!-- diff2html CSS/JS -->
+  <!-- Diff rendering -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
 
-  <!-- highlight.js for SQL syntax highlighting -->
+  <!-- SQL syntax highlighting -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
 </head>
 <body>
-  <!-- Left Sidebar - Memory Panel -->
-  <div id="sidebar">
-    <h2>Entity Memory</h2>
-
-    <input type="text" id="memorySearch" placeholder="Search entities..." />
-
-    <div class="memory-section" data-kind="tables">
-      <div class="memory-section-header">
-        <h3>Tables</h3>
-        <span class="memory-section-count">0</span>
-        <span class="memory-section-toggle">▼</span>
-      </div>
-      <div class="memory-section-content">
-        <ul id="memoryTables" class="memory-list">
-          <li class="memory-empty">No tables yet</li>
-        </ul>
-      </div>
+  <!-- Top Panel -->
+  <header id="top-panel">
+    <h1>SQL Catalog Analysis</h1>
+    <div class="prompt-container">
+      <textarea id="semantic-prompt" placeholder="Ask about entities, compare SQL, or manage clusters..."></textarea>
+      <button id="prompt-submit" type="button">Ask</button>
     </div>
-
-    <div class="memory-section" data-kind="procedures">
-      <div class="memory-section-header">
-        <h3>Procedures</h3>
-        <span class="memory-section-count">0</span>
-        <span class="memory-section-toggle">▼</span>
-      </div>
-      <div class="memory-section-content">
-        <ul id="memoryProcedures" class="memory-list">
-          <li class="memory-empty">No procedures yet</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="memory-section" data-kind="views">
-      <div class="memory-section-header">
-        <h3>Views</h3>
-        <span class="memory-section-count">0</span>
-        <span class="memory-section-toggle">▼</span>
-      </div>
-      <div class="memory-section-content">
-        <ul id="memoryViews" class="memory-list">
-          <li class="memory-empty">No views yet</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="memory-section" data-kind="functions">
-      <div class="memory-section-header">
-        <h3>Functions</h3>
-        <span class="memory-section-count">0</span>
-        <span class="memory-section-toggle">▼</span>
-      </div>
-      <div class="memory-section-content">
-        <ul id="memoryFunctions" class="memory-list">
-          <li class="memory-empty">No functions yet</li>
-        </ul>
-      </div>
-    </div>
-
-    <button id="clearMemory">Clear Memory</button>
-  </div>
+    <button id="settings-btn" type="button" title="Settings">⚙️</button>
+  </header>
 
   <!-- Main Content Area -->
-  <div id="main">
-    <h1>SQL Catalog QA</h1>
-
-    <div class="bar">
-      <textarea id="prompt" placeholder="Ask anything about the catalog (e.g., compare dbo.DealOrder vs dbo.DealOrder_20May2017)"></textarea>
-      <button id="ask">Ask</button>
-    </div>
-
-    <div id="content">
-      <div id="answer"></div>
-      <div id="diffwrap">
-        <div id="diff"></div>
-        <pre id="diffpre" hidden></pre>
-        <div class="meta" id="diffmeta"></div>
+  <main>
+    <!-- Left Panel with Tabs -->
+    <aside id="left-panel">
+      <div class="tab-header">
+        <button class="tab-btn active" data-tab="entities">Entities</button>
+        <button class="tab-btn" data-tab="clusters">Clusters</button>
       </div>
-    </div>
-  </div>
 
+      <!-- Entities Tab -->
+      <div id="tab-entities" class="tab-content active">
+        <input type="text" id="entity-search" placeholder="Search entities..." />
+        <div id="entity-list" class="entity-sections">
+          <div class="entity-section" data-kind="tables">
+            <div class="section-header">
+              <h3>Tables</h3>
+              <span class="count">0</span>
+            </div>
+            <ul class="entity-list"></ul>
+          </div>
+          <div class="entity-section" data-kind="procedures">
+            <div class="section-header">
+              <h3>Procedures</h3>
+              <span class="count">0</span>
+            </div>
+            <ul class="entity-list"></ul>
+          </div>
+          <div class="entity-section" data-kind="views">
+            <div class="section-header">
+              <h3>Views</h3>
+              <span class="count">0</span>
+            </div>
+            <ul class="entity-list"></ul>
+          </div>
+          <div class="entity-section" data-kind="functions">
+            <div class="section-header">
+              <h3>Functions</h3>
+              <span class="count">0</span>
+            </div>
+            <ul class="entity-list"></ul>
+          </div>
+        </div>
+        <button id="clear-entities" type="button">Clear All</button>
+      </div>
+
+      <!-- Clusters Tab -->
+      <div id="tab-clusters" class="tab-content">
+        <div id="cluster-list-container">
+          <ul id="cluster-list"></ul>
+        </div>
+
+        <!-- Entity Action Panel (shown when entity is selected) -->
+        <div id="entity-action-panel" style="display: none;"></div>
+
+        <!-- Cluster Controls -->
+        <div id="cluster-controls">
+          <div class="control-section hidden" id="rename-cluster-section">
+            <h4>Rename Cluster</h4>
+            <select id="rename-cluster-select"></select>
+            <input type="text" id="rename-cluster-input" placeholder="New name..." />
+            <button id="rename-cluster-btn" type="button">Rename</button>
+          </div>
+
+          <div class="control-section hidden" id="rename-group-section">
+            <h4>Rename Group</h4>
+            <select id="rename-group-select"></select>
+            <input type="text" id="rename-group-input" placeholder="New name..." />
+            <button id="rename-group-btn" type="button">Rename</button>
+          </div>
+
+          <div class="control-section hidden" id="move-group-section">
+            <h4>Move Group</h4>
+            <select id="move-group-select"></select>
+            <select id="move-group-target"></select>
+            <button id="move-group-btn" type="button">Move</button>
+          </div>
+
+          <div class="control-section hidden" id="move-procedure-section">
+            <h4>Move Procedure</h4>
+            <select id="move-procedure-select"></select>
+            <select id="move-procedure-target"></select>
+            <button id="move-procedure-btn" type="button">Move</button>
+          </div>
+
+          <p class="hint" id="cluster-hint">Select a cluster or entity to show controls</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Content Panel -->
+    <section id="content-panel">
+      <!-- Notification Bar -->
+      <div id="notification-bar" class="notification-bar hidden">
+        <div class="notification-content">
+          <span class="notification-icon"></span>
+          <span class="notification-message"></span>
+        </div>
+        <button class="notification-close" onclick="hideNotification()">&times;</button>
+      </div>
+
+      <div id="content-area">
+        <div id="welcome">
+          <h2>Welcome to SQL Catalog Analysis</h2>
+          <p>Use the semantic prompt above to:</p>
+          <ul>
+            <li>Search for entities: "show me order tables"</li>
+            <li>Compare SQL: "compare dbo.Order with dbo.Order_Archive"</li>
+            <li>Manage clusters: "rename cluster C1 to Orders"</li>
+            <li>View relationships: "which procedures access Order table"</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Status Bar -->
+  <footer id="status-bar">
+    <div id="status-message"></div>
+    <div id="session-info"></div>
+  </footer>
+
+  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/markdown_diff.js"></script>
+  <script type="module" src="/static/diagram.js"></script>
+  <script type="module" src="/static/cluster.js"></script>
+
+  <!-- Initialize app after all modules are loaded -->
   <script>
-    const server = (new URLSearchParams(location.search)).get('server') || 'http://127.0.0.1:8000';
-    let sessionId = null;  // Track session ID across requests
-
-    // Initialize collapsible sections
-    function initCollapsible() {
-      document.querySelectorAll('.memory-section-header').forEach(header => {
-        header.addEventListener('click', function() {
-          const section = this.closest('.memory-section');
-          const content = section.querySelector('.memory-section-content');
-          const toggle = section.querySelector('.memory-section-toggle');
-
-          content.classList.toggle('collapsed');
-          toggle.classList.toggle('collapsed');
-        });
-      });
-    }
-
-    // Search functionality
-    function initSearch() {
-      const searchInput = document.getElementById('memorySearch');
-      searchInput.addEventListener('input', function() {
-        const searchTerm = this.value.toLowerCase();
-
-        document.querySelectorAll('.memory-item').forEach(item => {
-          const entityName = item.getAttribute('data-entity').toLowerCase();
-          if (entityName.includes(searchTerm)) {
-            item.classList.remove('hidden');
-          } else {
-            item.classList.add('hidden');
-          }
-        });
-
-        // Update counts to reflect visible items
-        document.querySelectorAll('.memory-section').forEach(section => {
-          const listEl = section.querySelector('.memory-list');
-          const visibleCount = listEl.querySelectorAll('.memory-item:not(.hidden)').length;
-          const countEl = section.querySelector('.memory-section-count');
-          countEl.textContent = visibleCount;
-        });
-      });
-    }
-
-    // Function to update memory panel
-    function updateMemory(memory) {
-      const sections = {
-        'tables': document.getElementById('memoryTables'),
-        'procedures': document.getElementById('memoryProcedures'),
-        'views': document.getElementById('memoryViews'),
-        'functions': document.getElementById('memoryFunctions')
-      };
-
-      for (const [kind, listEl] of Object.entries(sections)) {
-        const entities = memory[kind] || [];
-        const section = listEl.closest('.memory-section');
-        const countEl = section.querySelector('.memory-section-count');
-
-        // Update count
-        countEl.textContent = entities.length;
-
-        if (entities.length === 0) {
-          listEl.innerHTML = `<li class="memory-empty">No ${kind} yet</li>`;
-        } else {
-          listEl.innerHTML = entities.map(name =>
-            `<li class="memory-item" data-entity="${name}">${name}</li>`
-          ).join('');
-        }
+    // Wait for all modules to finish loading and exporting their functions
+    window.addEventListener('load', () => {
+      if (typeof window.initApp === 'function') {
+        window.initApp();
       }
-
-      // Add click handlers to memory items
-      document.querySelectorAll('.memory-item').forEach(item => {
-        item.addEventListener('click', function() {
-          const entityName = this.getAttribute('data-entity');
-          const promptInput = document.getElementById('prompt');
-          const currentValue = promptInput.value.trim();
-          const wrappedText = '`' + entityName + '`';
-
-          if (currentValue) {
-            promptInput.value = currentValue + ' ' + wrappedText;
-          } else {
-            promptInput.value = wrappedText;
-          }
-
-          promptInput.focus();
-          promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
-        });
-      });
-
-      // Re-apply search filter if there's a search term
-      const searchInput = document.getElementById('memorySearch');
-      if (searchInput.value) {
-        searchInput.dispatchEvent(new Event('input'));
-      }
-    }
-
-    // Function to clear memory
-    async function clearMemory() {
-      if (!sessionId) return;
-
-      try {
-        const res = await fetch(`${server}/api/clear_memory`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ session_id: sessionId })
-        });
-        const data = await res.json();
-
-        if (data.ok) {
-          // Clear UI
-          updateMemory({ tables: [], procedures: [], views: [], functions: [] });
-        }
-      } catch (e) {
-        console.error('Failed to clear memory:', e);
-      }
-    }
-
-    // Function to highlight T-SQL types that hljs might miss
-    function highlightTSQLTypes(codeBlock) {
-      const tsqlTypes = [
-        'nvarchar', 'varchar', 'nchar', 'char', 'ntext', 'text',
-        'bit', 'tinyint', 'smallint', 'int', 'bigint',
-        'numeric', 'decimal', 'money', 'smallmoney', 'float', 'real',
-        'datetime', 'datetime2', 'smalldatetime', 'date', 'time', 'datetimeoffset', 'timestamp',
-        'uniqueidentifier', 'xml', 'hierarchyid', 'sql_variant',
-        'geography', 'geometry', 'varbinary', 'binary', 'image'
-      ];
-
-      const html = codeBlock.innerHTML;
-      let modifiedHtml = html;
-
-      tsqlTypes.forEach(type => {
-        // Match the type as a whole word (case-insensitive), but not if it's already inside a span
-        const regex = new RegExp(`\\b(${type})\\b(?![^<]*>|[^<>]*</)`, 'gi');
-        modifiedHtml = modifiedHtml.replace(regex, '<span class="hljs-type">$1</span>');
-      });
-
-      if (modifiedHtml !== html) {
-        codeBlock.innerHTML = modifiedHtml;
-      }
-    }
-
-    // Function to make entity names clickable
-    function makeEntitiesClickable(element) {
-      // Find all <code> elements (markdown backticks render as <code>)
-      const codeElements = element.querySelectorAll('code');
-
-      codeElements.forEach(codeEl => {
-        const text = codeEl.textContent.trim();
-
-        // Match entity patterns like: dbo.TableName, schema.ProcName, TableName.ColumnName, etc.
-        // Also match qualified columns like dbo.Table.Column
-        // Allow spaces within names (e.g., "dbo.BO Client Cash")
-        const entityPattern = /^([a-zA-Z_][\w\s]*\.)?[a-zA-Z_][\w\s]*(\.[a-zA-Z_][\w\s]*)?$/;
-
-        if (entityPattern.test(text)) {
-          // Create a clickable span
-          const span = document.createElement('span');
-          span.className = 'clickable-entity';
-          span.textContent = text;
-          span.title = `Click to add "${text}" to prompt`;
-
-          span.addEventListener('click', (e) => {
-            e.preventDefault();
-            const promptInput = document.getElementById('prompt');
-            const currentValue = promptInput.value.trim();
-
-            // Wrap entity in backticks to avoid ambiguity with spaces
-            const wrappedText = '`' + text + '`';
-
-            // Append entity to prompt with a space if needed
-            if (currentValue) {
-              promptInput.value = currentValue + ' ' + wrappedText;
-            } else {
-              promptInput.value = wrappedText;
-            }
-
-            // Focus the prompt input
-            promptInput.focus();
-
-            // Move cursor to end
-            promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
-          });
-
-          // Replace the code element's content with our clickable span
-          codeEl.innerHTML = '';
-          codeEl.appendChild(span);
-        }
-      });
-    }
-
-    async function ask() {
-      const btn = document.getElementById('ask');
-      const prompt = document.getElementById('prompt').value.trim();
-      const answerEl = document.getElementById('answer');
-      const diffWrap = document.getElementById('diffwrap');
-      const diffEl = document.getElementById('diff');
-      const diffPre = document.getElementById('diffpre');
-      const diffMeta = document.getElementById('diffmeta');
-
-      if (!prompt) return;
-
-      btn.disabled = true;
-      answerEl.innerHTML = 'Thinking…';
-      diffWrap.style.display = 'none';
-      diffEl.innerHTML = '';
-      diffPre.hidden = true;
-      diffPre.textContent = '';
-      diffMeta.textContent = '';
-
-      try {
-        const res = await fetch(`${server}/api/ask`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ prompt, session_id: sessionId })
-        });
-        const data = await res.json();
-
-        // Update session ID and memory
-        if (data.session_id) {
-          sessionId = data.session_id;
-        }
-        if (data.memory) {
-          updateMemory(data.memory);
-        }
-
-        // Render markdown "answer"
-        const md = (data && data.answer) ? data.answer : '(no answer)';
-        answerEl.innerHTML = marked.parse(md);
-
-        // Apply syntax highlighting to SQL code blocks
-        if (typeof hljs !== 'undefined') {
-          const codeBlocks = answerEl.querySelectorAll('pre code');
-
-          codeBlocks.forEach(block => {
-            // If backend indicates this response contains SQL, force SQL highlighting
-            if (data.contains_sql) {
-              block.className = 'language-sql';
-              delete block.dataset.highlighted; // Remove any existing highlight flag
-              try {
-                hljs.highlightElement(block);
-                // Post-process to highlight T-SQL types that hljs missed
-                highlightTSQLTypes(block);
-              } catch (e) {
-                console.error('Syntax highlighting failed:', e);
-              }
-            } else {
-              // For non-SQL responses, only highlight if it has language class or looks like SQL
-              const content = block.textContent.toLowerCase();
-              const isSQL = block.classList.contains('language-sql') ||
-                           content.includes('select') || content.includes('create') || content.includes('insert') ||
-                           content.includes('update') || content.includes('delete') || content.includes('from') ||
-                           content.includes('alter') || content.includes('drop') || content.includes('declare');
-
-              if (isSQL) {
-                block.classList.add('language-sql');
-                delete block.dataset.highlighted;
-                try {
-                  hljs.highlightElement(block);
-                } catch (e) {
-                  console.error('Syntax highlighting failed:', e);
-                }
-              }
-            }
-          });
-        }
-
-        // Make entity names clickable
-        makeEntitiesClickable(answerEl);
-
-        // If unified_diff is present, render a nice side-by-side diff
-        if (data && data.unified_diff) {
-          diffWrap.style.display = 'block';
-          try {
-            const diffHtml = Diff2Html.html(data.unified_diff, {
-              drawFileList: true,
-              outputFormat: 'side-by-side',   // or 'line-by-line'
-              matching: 'words',
-              highlight: true
-            });
-            diffEl.innerHTML = diffHtml;
-            diffPre.hidden = true;
-            diffMeta.textContent = 'Rendered by diff2html';
-            // Optionally highlight SQL blocks inside the diff
-            if (typeof hljs !== 'undefined') {
-              document.querySelectorAll('#diff code').forEach(el => {
-                try {
-                  hljs.highlightElement(el);
-                } catch (e) {
-                  console.error('Diff highlighting failed:', e);
-                }
-              });
-            }
-          } catch (e) {
-            // Fallback: show raw unified diff in <pre>
-            diffEl.innerHTML = '';
-            diffPre.hidden = false;
-            diffPre.textContent = data.unified_diff;
-            diffMeta.textContent = 'Raw unified diff (diff2html failed)';
-          }
-        }
-
-      } catch (e) {
-        answerEl.innerHTML = `<span style="color:#b00">Error: ${e}</span>`;
-        diffWrap.style.display = 'none';
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    document.getElementById('ask').addEventListener('click', ask);
-    document.getElementById('prompt').addEventListener('keydown', (ev) => {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') ask();
     });
-    document.getElementById('clearMemory').addEventListener('click', clearMemory);
-
-    // Initialize collapsible and search on page load
-    initCollapsible();
-    initSearch();
   </script>
 </body>
 </html>

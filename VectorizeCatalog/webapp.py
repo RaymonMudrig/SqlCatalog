@@ -1,166 +1,230 @@
-# webapp.py
+# webapp.py - Unified SQL Catalog + Cluster Analysis Backend
 from __future__ import annotations
-from fastapi import FastAPI, Request, Cookie
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.requests import Request
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import Optional, Any, Dict, List
 import json
 import uuid
+from pathlib import Path
+
+# Import qcat (semantic search) components
 from qcat.items import load_items
 from qcat.paths import BASE, OUTPUT_DIR, ITEMS_JSON
 from qcat.agent import agent_answer
 
-app = FastAPI()
+# Import cluster backend components
+from cluster_backend import ClusterService, ClusterState
 
-# In-memory session storage for entity memory
-# session_id -> {tables: set, procedures: set, views: set, functions: set}
-SESSION_MEMORY: Dict[str, Dict[str, set]] = {}
+app = FastAPI(title="SQL Catalog - Unified")
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Serve exactly from VectorizeCatalog/static
+# Static file directories
 STATIC_DIR = BASE / "static"
+QCAT_STATIC = STATIC_DIR / "qcat"
+CLUSTER_STATIC = STATIC_DIR / "cluster"
 
-# /static/... -> VectorizeCatalog/static/...
+# Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/qcat-ui", StaticFiles(directory=str(QCAT_STATIC)), name="qcat-ui")
+app.mount("/cluster-ui", StaticFiles(directory=str(CLUSTER_STATIC)), name="cluster-ui")
 
-# / -> VectorizeCatalog/static/index.html
+# Initialize backends
+ITEMS, EMB = load_items()
+
+# Initialize cluster service
+CLUSTER_SNAPSHOT_PATH = OUTPUT_DIR / "cluster" / "clusters.json"
+CLUSTER_SERVICE = ClusterService(CLUSTER_SNAPSHOT_PATH)
+
+# Session memory for qcat
+SESSION_MEMORY: Dict[str, Dict[str, set]] = {}
+
+# ============================================================================
+# ROOT - Serve unified UI
+# ============================================================================
+
 @app.get("/", response_class=HTMLResponse)
 def index():
+    """Serve the unified SQL Catalog interface"""
     return FileResponse(str(STATIC_DIR / "index.html"))
 
-# Optional: also serve /index.html explicitly
 @app.get("/index.html", response_class=HTMLResponse)
 def index_html():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
-ITEMS, EMB = load_items()
+# ============================================================================
+# QCAT ROUTES - Semantic Search
+# ============================================================================
 
 class AskBody(BaseModel):
     prompt: str
     k: int = 10
-
-    # use alias to avoid BaseModel.schema clash
-    schema_name: str | None = Field(
-        default=None,
-        validation_alias="schema",
-        serialization_alias="schema",
-    )
-
+    schema_name: str | None = Field(default=None, validation_alias="schema", serialization_alias="schema")
     pattern: str | None = None
     name_match: str | None = None
     include_via_views: bool = False
     fuzzy: bool = False
     unused_only: bool = False
-
-    # existing override support
-    intent_override: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("intent_override", "intent"),
-        serialization_alias="intent_override",
-    )
-
-    # NEW: whether the user accepts the agent's proposed intent
+    intent_override: str | None = Field(default=None, validation_alias=AliasChoices("intent_override", "intent"))
     accept_proposal: bool = False
-
-    # Session ID for memory tracking
     session_id: str | None = None
-
     model_config = ConfigDict(populate_by_name=True)
 
-
-class SemanticBody(BaseModel):
-    query: str
-    k: int = 10
-    kind: str | None = None
-
-    schema_name: str | None = Field(
-        default=None,
-        validation_alias="schema",
-        serialization_alias="schema",
-    )
-
-    pattern: str | None = None
-    name_match: str | None = None
-    include_via_views: bool = True
-    fuzzy: bool = False
-    unused_only: bool = False
-
-    # keep consistent; optional here
-    intent_override: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("intent_override", "intent"),
-        serialization_alias="intent_override",
-    )
-
-    # Optional: mirror AskBody if you also use it on /api/semantic
-    accept_proposal: bool = False
-
-    model_config = ConfigDict(populate_by_name=True)
-
-@app.post("/api/ask")
-def api_ask(body: AskBody):
-    # Generate session ID if not provided
+@app.post("/api/qcat/ask")
+def qcat_ask(body: AskBody):
+    """Semantic search endpoint"""
     session_id = body.session_id or str(uuid.uuid4())
 
-    # Initialize session memory if needed
     if session_id not in SESSION_MEMORY:
         SESSION_MEMORY[session_id] = {
-            "tables": set(),
-            "procedures": set(),
-            "views": set(),
-            "functions": set()
+            "tables": set(), "procedures": set(),
+            "views": set(), "functions": set()
         }
 
-    # Get answer from agent
     out = agent_answer(
         query=body.prompt, items=ITEMS, emb=EMB,
-        schema_filter=body.schema, name_pattern=body.pattern,
+        schema_filter=body.schema_name, name_pattern=body.pattern,
         intent_override=body.intent_override,
         accept_proposal=body.accept_proposal,
     )
 
-    # Update memory with entities from this query
+    # Update memory
     entities = out.get("entities", [])
     for entity in entities:
         kind = entity.get("kind")
         name = entity.get("name")
         if kind and name:
-            plural = kind + "s"  # table->tables, procedure->procedures, etc
+            plural = kind + "s"
             if plural in SESSION_MEMORY[session_id]:
                 SESSION_MEMORY[session_id][plural].add(name)
 
-    # Return memory alongside answer
-    memory = {
-        "tables": sorted(SESSION_MEMORY[session_id]["tables"]),
-        "procedures": sorted(SESSION_MEMORY[session_id]["procedures"]),
-        "views": sorted(SESSION_MEMORY[session_id]["views"]),
-        "functions": sorted(SESSION_MEMORY[session_id]["functions"])
-    }
-
+    memory = {k: sorted(v) for k, v in SESSION_MEMORY[session_id].items()}
     return {**out, "session_id": session_id, "memory": memory}
 
-# Clear memory endpoint
-@app.post("/api/clear_memory")
-def clear_memory(body: Dict[str, Any]):
+@app.post("/api/qcat/clear_memory")
+def qcat_clear_memory(body: Dict[str, Any]):
+    """Clear session memory"""
     session_id = body.get("session_id")
     if session_id and session_id in SESSION_MEMORY:
         SESSION_MEMORY[session_id] = {
-            "tables": set(),
-            "procedures": set(),
-            "views": set(),
-            "functions": set()
+            "tables": set(), "procedures": set(),
+            "views": set(), "functions": set()
         }
         return {"ok": True, "message": "Memory cleared"}
     return {"ok": False, "message": "Session not found"}
 
-# Simple health
+# ============================================================================
+# CLUSTER ROUTES - Cluster Management
+# ============================================================================
+
+@app.get("/api/cluster/summary")
+def cluster_summary():
+    """Get cluster summary"""
+    return CLUSTER_SERVICE.summary()
+
+@app.get("/api/cluster/{cluster_id}")
+def cluster_detail(cluster_id: str):
+    """Get cluster details"""
+    return CLUSTER_SERVICE.cluster_detail(cluster_id)
+
+@app.get("/api/cluster/svg/summary")
+def cluster_svg_summary():
+    """Get summary SVG"""
+    return HTMLResponse(content=CLUSTER_SERVICE.summary_svg(), media_type="image/svg+xml")
+
+@app.get("/api/cluster/svg/{cluster_id}")
+def cluster_svg_detail(cluster_id: str):
+    """Get cluster detail SVG"""
+    return HTMLResponse(content=CLUSTER_SERVICE.cluster_svg(cluster_id), media_type="image/svg+xml")
+
+@app.post("/api/cluster/command")
+def cluster_command(body: Dict[str, Any]):
+    """Execute cluster command"""
+    if "command" in body:
+        result = CLUSTER_SERVICE.execute_text(body["command"])
+    else:
+        result = CLUSTER_SERVICE.execute(body)
+    return result
+
+@app.post("/api/cluster/reload")
+def cluster_reload():
+    """Reload clusters from snapshot"""
+    summary = CLUSTER_SERVICE.reload()
+    return {"ok": True, "summary": summary}
+
+# ============================================================================
+# UNIFIED COMMAND ROUTER
+# ============================================================================
+
+class UnifiedCommand(BaseModel):
+    """Unified command that routes to either qcat or cluster"""
+    command: str
+    session_id: str | None = None
+
+@app.post("/api/command")
+def unified_command(body: UnifiedCommand):
+    """
+    Route command to appropriate backend:
+    - Cluster commands: "rename cluster X", "move group Y", etc.
+    - Semantic queries: everything else
+    """
+    cmd = body.command.strip().lower()
+
+    # Detect cluster commands
+    cluster_keywords = [
+        "rename cluster", "rename group", "move group",
+        "move procedure", "move proc", "split", "merge"
+    ]
+
+    is_cluster_cmd = any(kw in cmd for kw in cluster_keywords)
+
+    if is_cluster_cmd:
+        # Parse and execute cluster command
+        try:
+            result = CLUSTER_SERVICE.execute_text(body.command)
+            return {
+                "type": "cluster",
+                "result": result,
+                "ok": result.get("status") == "ok"
+            }
+        except Exception as e:
+            return {
+                "type": "cluster",
+                "ok": False,
+                "error": str(e)
+            }
+    else:
+        # Semantic search
+        ask_body = AskBody(
+            prompt=body.command,
+            session_id=body.session_id
+        )
+        result = qcat_ask(ask_body)
+        return {
+            "type": "qcat",
+            "result": result,
+            "ok": True
+        }
+
+# ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
 @app.get("/api/ping")
 def ping():
-    return {"ok": True}
+    return {"ok": True, "backends": ["qcat", "cluster"]}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8800)

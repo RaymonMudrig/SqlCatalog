@@ -1,0 +1,133 @@
+/* ============================================================================
+   DIAGRAM CONTROLS & INTERACTION
+   ============================================================================ */
+
+.diagram-container {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  background: white;
+  min-height: 0;
+}
+
+/* SVG entity highlighting */
+.diagram-container svg g[id] {
+  cursor: pointer;
+  transition: opacity 0.2s, filter 0.2s;
+}
+
+.diagram-container svg g[id]:hover {
+  opacity: 0.8;
+}
+
+.diagram-container svg g[id].selected {
+  filter: drop-shadow(0 0 4px rgba(37, 99, 235, 0.8));
+}
+
+.diagram-container svg g[id].selected ellipse,
+.diagram-container svg g[id].selected polygon,
+.diagram-container svg g[id].selected rect {
+  stroke: #3b82f6;
+  stroke-width: 3;
+}
+
+/* Dimmed entities and edges when selection is active */
+.diagram-container svg g.node.dimmed,
+.diagram-container svg g.edge.dimmed,
+.diagram-container svg g[id].dimmed {
+  opacity: 0.2 !important;
+}
+
+/* Highlighted nodes */
+.diagram-container svg g.node.highlighted,
+.diagram-container svg g[id].highlighted {
+  opacity: 1 !important;
+}
+
+/* Highlighted edges */
+.diagram-container svg g.edge.highlighted {
+  opacity: 1 !important;
+}
+
+/* Highlighted node styling (when not selected) */
+.diagram-container svg g.node.highlighted:not(.selected) ellipse,
+.diagram-container svg g.node.highlighted:not(.selected) polygon,
+.diagram-container svg g.node.highlighted:not(.selected) path,
+.diagram-container svg g[id].highlighted:not(.selected) ellipse,
+.diagram-container svg g[id].highlighted:not(.selected) polygon,
+.diagram-container svg g[id].highlighted:not(.selected) rect {
+  stroke: var(--accent) !important;
+  stroke-width: 2 !important;
+}
+
+/* Highlighted edge styling */
+.diagram-container svg g.edge.highlighted path {
+  stroke: var(--accent) !important;
+  stroke-width: 2 !important;
+}
+
+.diagram-container svg g.edge.highlighted polygon {
+  stroke: var(--accent) !important;
+  fill: var(--accent) !important;
+}
+
+/* Entity action panel in left sidebar */
+.entity-action-panel {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+}
+
+.entity-action-panel h4 {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.entity-action-panel .entity-name {
+  font-size: 0.8125rem;
+  color: var(--accent);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  background: white;
+  border-radius: 4px;
+  word-break: break-word;
+}
+
+.entity-action-panel .action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.entity-action-panel button {
+  padding: 0.5rem;
+  font-size: 0.8125rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.entity-action-panel button:hover {
+  background: var(--accent-hover);
+}
+
+.entity-action-panel button.secondary {
+  background: white;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.entity-action-panel button.secondary:hover {
+  background: var(--bg);
+}
