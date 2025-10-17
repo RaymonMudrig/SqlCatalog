@@ -699,3 +699,190 @@ function wireZoomControls() {
     }, { passive: false });
   });
 }
+
+// ============================================================================
+// TRASH OPERATIONS
+// ============================================================================
+
+async function loadTrash() {
+  try {
+    const trashData = await fetchJson(`${API_BASE}/trash`);
+    renderTrash(trashData);
+  } catch (error) {
+    console.error('Failed to load trash:', error);
+    setStatus('Failed to load trash: ' + error.message, 'error');
+  }
+}
+
+function renderTrash(trashData) {
+  const trashContent = document.getElementById('trash-content');
+  if (!trashContent) return;
+
+  const totalCount = trashData.total_count || 0;
+
+  if (totalCount === 0) {
+    trashContent.innerHTML = '<p class="trash-empty">Trash is empty</p>';
+    return;
+  }
+
+  let html = '';
+
+  // Render procedures
+  if (trashData.procedures && trashData.procedures.length > 0) {
+    html += '<div class="trash-section">';
+    html += `<h4>Procedures (${trashData.procedures.length})</h4>`;
+    trashData.procedures.forEach(proc => {
+      const deletedDate = proc.deleted_at ? new Date(proc.deleted_at).toLocaleString() : 'Unknown';
+      const originalCluster = proc.original_cluster || 'Unknown';
+      const tableCount = proc.table_count || 0;
+
+      html += '<div class="trash-item">';
+      html += '  <div class="trash-item-header">';
+      html += `    <span class="trash-item-name">${escapeHtml(proc.procedure_name)}</span>`;
+      html += '  </div>';
+      html += '  <div class="trash-item-meta">';
+      html += `    <span>Original cluster: ${escapeHtml(originalCluster)}</span>`;
+      html += `    <span>Tables: ${tableCount}</span>`;
+      html += `    <span>Deleted: ${deletedDate}</span>`;
+      html += '  </div>';
+      html += '  <div class="trash-item-actions">';
+      html += `    <button class="restore-btn" onclick="restoreProcedure('${escapeHtml(proc.procedure_name)}')">Restore</button>`;
+      html += '  </div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Render tables
+  if (trashData.tables && trashData.tables.length > 0) {
+    html += '<div class="trash-section">';
+    html += `<h4>Tables (${trashData.tables.length})</h4>`;
+    trashData.tables.forEach(table => {
+      const deletedDate = table.deleted_at ? new Date(table.deleted_at).toLocaleString() : 'Unknown';
+      const wasGlobal = table.data?.was_global ? 'Yes' : 'No';
+      const wasOrphaned = table.data?.was_orphaned ? 'Yes' : 'No';
+
+      html += '<div class="trash-item">';
+      html += '  <div class="trash-item-header">';
+      html += `    <span class="trash-item-name">${escapeHtml(table.item_id)}</span>`;
+      html += '  </div>';
+      html += '  <div class="trash-item-meta">';
+      html += `    <span>Was global: ${wasGlobal}</span>`;
+      html += `    <span>Was orphaned: ${wasOrphaned}</span>`;
+      html += `    <span>Deleted: ${deletedDate}</span>`;
+      html += '  </div>';
+      html += '  <div class="trash-item-actions">';
+      html += `    <button class="restore-btn" onclick="restoreTable(${table.index})">Restore</button>`;
+      html += '  </div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  trashContent.innerHTML = html;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function restoreProcedure(procedureName) {
+  // Prompt for target cluster
+  const targetCluster = prompt(`Restore procedure '${procedureName}' to which cluster?`, currentClusterId || '');
+  if (!targetCluster) return;
+
+  try {
+    const response = await fetchJson(`${API_BASE}/trash/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        item_type: 'procedure',
+        procedure_name: procedureName,
+        target_cluster_id: targetCluster,
+        force_new_group: false,
+      }),
+    });
+
+    setStatus(response.message || 'Procedure restored successfully', 'success');
+
+    // Reload trash and summary
+    await loadTrash();
+    await loadSummaryData();
+    await loadSummaryGraph();
+
+    // If viewing a cluster, reload it
+    if (currentClusterId) {
+      await showCluster(currentClusterId, { preserveView: true });
+    }
+  } catch (error) {
+    console.error('Failed to restore procedure:', error);
+    setStatus('Failed to restore procedure: ' + error.message, 'error');
+  }
+}
+
+async function restoreTable(trashIndex) {
+  if (!confirm('Restore this table from trash?')) return;
+
+  try {
+    const response = await fetchJson(`${API_BASE}/trash/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        item_type: 'table',
+        trash_index: trashIndex,
+      }),
+    });
+
+    setStatus(response.message || 'Table restored successfully', 'success');
+
+    // Reload trash and summary
+    await loadTrash();
+    await loadSummaryData();
+    await loadSummaryGraph();
+
+    // If viewing a cluster, reload it
+    if (currentClusterId) {
+      await showCluster(currentClusterId, { preserveView: true });
+    }
+  } catch (error) {
+    console.error('Failed to restore table:', error);
+    setStatus('Failed to restore table: ' + error.message, 'error');
+  }
+}
+
+async function emptyTrash() {
+  if (!confirm('Permanently delete all items in trash? This action cannot be undone.')) return;
+
+  try {
+    const response = await fetchJson(`${API_BASE}/trash/empty`, {
+      method: 'POST',
+    });
+
+    setStatus(response.message || 'Trash emptied successfully', 'success');
+    await loadTrash();
+  } catch (error) {
+    console.error('Failed to empty trash:', error);
+    setStatus('Failed to empty trash: ' + error.message, 'error');
+  }
+}
+
+// Wire trash panel events
+const emptyTrashBtn = document.getElementById('empty-trash-btn');
+if (emptyTrashBtn) {
+  emptyTrashBtn.addEventListener('click', emptyTrash);
+}
+
+// Load trash when switching to trash tab
+sidebarTabs.forEach((tab) => {
+  tab.addEventListener('click', () => {
+    if (tab.dataset.tab === 'trash') {
+      loadTrash();
+    }
+  });
+});
+
+// Make restore functions globally available
+window.restoreProcedure = restoreProcedure;
+window.restoreTable = restoreTable;

@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple, List
 from qcat import ops as K
 from qcat import formatters as F
 from qcat.llm_intent import classify_intent
-from qcat.intents import label_of
+from qcat.intents import label_of, INTENTS
 
 CONFIRM_THRESHOLD = 0.70  # propose if below this
 
@@ -100,7 +100,7 @@ def agent_answer(
     if intent == "semantic" or float(L.get("confidence", 0)) < CONFIRM_THRESHOLD:
         # Build a short human message
         guess = L.get("intent", "semantic")
-        guess_label = label_of(guess) if guess in F.INTENT_TO_RENDERER else "semantic"
+        guess_label = label_of(guess) if guess in INTENTS else "semantic"
         props = {k: v for k, v in L.items() if k not in ("intent", "confidence", "source")}
         return {
             "answer": f"I think you meant: **{guess_label}**.\n\n"

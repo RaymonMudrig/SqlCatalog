@@ -22,9 +22,19 @@
       <div class="tab-header">
         <button class="sidebar-tab active" data-tab="clusters">Clusters</button>
         <button class="sidebar-tab" data-tab="rename">Rename</button>
+        <button class="sidebar-tab" data-tab="trash">Trash</button>
       </div>
       <div class="tab-panel active" id="tab-clusters">
         <ul id="cluster-list" class="list fill"></ul>
+      </div>
+      <div class="tab-panel" id="tab-trash">
+        <div class="trash-header">
+          <h3>🗑️ Trash</h3>
+          <button id="empty-trash-btn" class="danger-btn" title="Permanently delete all items">Empty Trash</button>
+        </div>
+        <div id="trash-content">
+          <p class="hint">Loading trash...</p>
+        </div>
       </div>
       <div class="tab-panel" id="tab-rename">
         <section id="rename-cluster-section" class="hidden">

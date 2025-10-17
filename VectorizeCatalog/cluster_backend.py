@@ -92,6 +92,23 @@ class ProcedureTableEdge:
         return asdict(self)
 
 
+@dataclass
+class TrashItem:
+    """Represents a deleted entity (procedure or table)."""
+    item_type: str  # 'procedure' or 'table'
+    item_id: str
+    data: Dict[str, Any]
+    deleted_at: str  # ISO timestamp
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "item_type": self.item_type,
+            "item_id": self.item_id,
+            "data": self.data,
+            "deleted_at": self.deleted_at,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Cluster state & helpers
 # ---------------------------------------------------------------------------
@@ -129,8 +146,21 @@ class ClusterState:
         self.table_nodes: List[Dict[str, Any]] = []
         self.procedure_table_edges: List[ProcedureTableEdge] = []
         self.last_updated: datetime = datetime.now(timezone.utc)
+        self.trash: List[TrashItem] = []
 
+        self._ensure_trash_cluster()
         self.rebuild_indexes()
+
+    def _ensure_trash_cluster(self):
+        """Ensure a special 'Trash' cluster exists for deleted procedures."""
+        if "trash" not in self.clusters:
+            self.clusters["trash"] = ClusterInfo(
+                cluster_id="trash",
+                group_ids=[],
+                display_name="Trash",
+            )
+            if "trash" not in self.cluster_order:
+                self.cluster_order.append("trash")
 
     # ------------------------------------------------------------------ #
     # Loading & serialization
@@ -190,7 +220,17 @@ class ClusterState:
             if table_node.get("is_orphaned", False):
                 orphaned_tables.add(table_node["table"])
 
-        return cls(
+        # Load trash
+        trash_items = []
+        for item_data in payload.get("trash", []):
+            trash_items.append(TrashItem(
+                item_type=item_data["item_type"],
+                item_id=item_data["item_id"],
+                data=item_data["data"],
+                deleted_at=item_data["deleted_at"],
+            ))
+
+        state = cls(
             clusters=clusters,
             groups=groups,
             cluster_order=cluster_order,
@@ -202,6 +242,8 @@ class ClusterState:
             parameters=parameters,
             catalog_path=catalog_path,
         )
+        state.trash = trash_items
+        return state
 
     def snapshot(self) -> Dict[str, Any]:
         """Serialize current state in the same shape as the JSON snapshot."""
@@ -215,6 +257,7 @@ class ClusterState:
             "similarity_edges": [edge.to_dict() for edge in self.similarity_edges],
             "table_nodes": list(self.table_nodes),
             "procedure_table_edges": [edge.to_dict() for edge in self.procedure_table_edges],
+            "trash": [item.to_dict() for item in self.trash],
         }
 
     # ------------------------------------------------------------------ #
@@ -345,6 +388,514 @@ class ClusterState:
 
         self.rebuild_indexes()
         return new_group.group_id, target_cluster_id
+
+    # ------------------------------------------------------------------ #
+    # Trash operations (delete/restore real entities)
+    # ------------------------------------------------------------------ #
+
+    def delete_procedure(self, procedure_name: str) -> Dict[str, Any]:
+        """Delete a procedure (real entity) by moving it to Trash cluster.
+
+        Side effects:
+        - Procedure moved to Trash cluster as singleton group
+        - Original group loses this procedure
+        - If original group becomes empty → auto-deleted (virtual entity cleanup)
+        - Tables only accessed by this procedure become orphaned
+        - Tables that are orphaned AND missing → auto-removed from tracking
+        """
+        # Find the group containing this procedure
+        group = self.find_group_by_procedure(procedure_name)
+        original_group_id = group.group_id
+        original_cluster_id = group.cluster_id
+
+        # Don't allow deleting if already in trash
+        if group.cluster_id == "trash":
+            raise ValueError(f"Procedure '{procedure_name}' is already in trash")
+
+        # Get procedure's table dependencies
+        procedure_tables = list(group.tables)
+
+        # Calculate which tables will become orphaned
+        tables_to_orphan = []
+        for table in procedure_tables:
+            # Count how many OTHER procedures/groups use this table
+            usage_count = 0
+            for g in self.groups.values():
+                if g.cluster_id == "trash":
+                    continue  # Don't count trash procedures
+                if g.group_id == original_group_id:
+                    # Count other procedures in this group
+                    other_procs = [p for p in g.procedures if p != procedure_name]
+                    if other_procs:
+                        usage_count += 1
+                elif table in g.tables:
+                    usage_count += 1
+
+            if usage_count == 0:
+                tables_to_orphan.append(table)
+
+        # Create trash metadata
+        trash_metadata = {
+            "procedure_name": procedure_name,
+            "original_group_id": original_group_id,
+            "original_cluster_id": original_cluster_id,
+            "tables": procedure_tables,
+        }
+
+        # Create trash item
+        trash_item = TrashItem(
+            item_type="procedure",
+            item_id=procedure_name,
+            data=trash_metadata,
+            deleted_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.trash.append(trash_item)
+
+        # Remove procedure from original group
+        group.procedures = [p for p in group.procedures if p != procedure_name]
+
+        # Check if original group is now empty → auto-delete (virtual entity)
+        empty_group_deleted = False
+        if len(group.procedures) == 0:
+            # Remove empty group
+            if original_cluster_id in self.clusters:
+                cluster = self.clusters[original_cluster_id]
+                cluster.group_ids = [gid for gid in cluster.group_ids if gid != original_group_id]
+
+            self.group_order.remove(original_group_id)
+            del self.groups[original_group_id]
+            empty_group_deleted = True
+        else:
+            # Update group metadata
+            group.is_singleton = len(group.procedures) == 1
+            if group.is_singleton and not group.display_name:
+                group.display_name = group.procedures[0]
+
+        # Create singleton group in Trash cluster
+        trash_group_id = f"trash_{procedure_name}"
+        suffix = 1
+        while trash_group_id in self.groups:
+            suffix += 1
+            trash_group_id = f"trash_{procedure_name}_{suffix}"
+
+        trash_group = ProcedureGroup(
+            group_id=trash_group_id,
+            cluster_id="trash",
+            procedures=[procedure_name],
+            tables=procedure_tables,
+            is_singleton=True,
+            display_name=procedure_name,
+        )
+
+        self.groups[trash_group_id] = trash_group
+        self.group_order.append(trash_group_id)
+        self.clusters["trash"].group_ids.append(trash_group_id)
+
+        # Mark tables as orphaned
+        for table in tables_to_orphan:
+            self.orphaned_tables.add(table)
+
+        # Auto-remove virtual entities: tables that are BOTH missing AND orphaned
+        tables_auto_removed = []
+        for table in list(self.missing_tables):
+            if table in self.orphaned_tables:
+                # This is a virtual entity (doesn't exist in catalog, not used by any proc)
+                self.missing_tables.discard(table)
+                self.orphaned_tables.discard(table)
+                tables_auto_removed.append(table)
+
+        # Rebuild indexes
+        self.rebuild_indexes()
+
+        return {
+            "deleted_procedure": procedure_name,
+            "original_group": original_group_id,
+            "original_cluster": original_cluster_id,
+            "empty_group_deleted": empty_group_deleted,
+            "moved_to_trash_group": trash_group_id,
+            "tables_now_orphaned": tables_to_orphan,
+            "tables_auto_removed": tables_auto_removed,
+        }
+
+    def delete_table(self, table_name: str) -> Dict[str, Any]:
+        """Delete a table (real entity from catalog).
+
+        Protection: Cannot delete missing tables (virtual entities)
+
+        Side effects:
+        - Table removed from catalog tracking
+        - If table is still referenced by procedures → becomes missing
+        - Groups that reference it keep the reference (table becomes missing)
+        - If table becomes both missing AND orphaned → auto-removed from tracking
+        """
+        # Protection: Cannot delete missing tables (they're virtual entities)
+        if table_name in self.missing_tables:
+            raise ValueError(
+                f"Cannot delete missing table '{table_name}'. "
+                f"Missing tables are virtual entities (don't exist in catalog). "
+                f"They can only be removed by deleting procedures that reference them."
+            )
+
+        # Check if table exists in system
+        is_global = table_name in self.global_tables
+        is_orphaned = table_name in self.orphaned_tables
+
+        # Find groups that reference this table (excluding trash)
+        referencing_groups = [
+            g.group_id for g in self.groups.values()
+            if table_name in g.tables and g.cluster_id != "trash"
+        ]
+
+        if not is_global and not is_orphaned and not referencing_groups:
+            raise KeyError(f"Table '{table_name}' not found in system")
+
+        # Table is now deleted from catalog
+        # If it's still referenced by procedures, it becomes missing
+        will_become_missing = len(referencing_groups) > 0
+
+        # Create trash item for table
+        trash_item = TrashItem(
+            item_type="table",
+            item_id=table_name,
+            data={
+                "table_name": table_name,
+                "was_global": is_global,
+                "was_orphaned": is_orphaned,
+                "referencing_groups": referencing_groups,
+            },
+            deleted_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.trash.append(trash_item)
+
+        # Remove from tracking sets
+        self.global_tables.discard(table_name)
+        self.orphaned_tables.discard(table_name)
+
+        # If table is referenced, mark as missing
+        if will_become_missing:
+            self.missing_tables.add(table_name)
+
+        # Check if it becomes both missing and orphaned (shouldn't happen, but handle it)
+        auto_removed = False
+        if table_name in self.missing_tables and table_name in self.orphaned_tables:
+            self.missing_tables.discard(table_name)
+            self.orphaned_tables.discard(table_name)
+            auto_removed = True
+
+        # Rebuild indexes
+        self.rebuild_indexes()
+
+        return {
+            "deleted_table": table_name,
+            "was_global": is_global,
+            "was_orphaned": is_orphaned,
+            "became_missing": will_become_missing,
+            "referencing_groups": referencing_groups,
+            "auto_removed": auto_removed,
+        }
+
+    def restore_procedure(
+        self,
+        procedure_name: str,
+        target_cluster_id: str,
+        force_new_group: bool = False
+    ) -> Dict[str, Any]:
+        """Restore a procedure from Trash cluster with strict auto-grouping (100% similarity).
+
+        Auto-grouping logic:
+        1. Find the trash group containing this procedure
+        2. Find existing groups in target cluster with EXACT same table set
+        3. If exact match found and not force_new_group → join that group
+        4. Otherwise → create new singleton group
+        5. Auto-reinsertion: If procedure needs missing tables, reinsert them
+        """
+        # Find procedure in trash
+        trash_group = self.find_group_by_procedure(procedure_name)
+
+        if trash_group.cluster_id != "trash":
+            raise ValueError(
+                f"Procedure '{procedure_name}' is not in trash "
+                f"(currently in '{trash_group.cluster_id}')"
+            )
+
+        # Validate target cluster
+        if target_cluster_id not in self.clusters:
+            raise KeyError(f"Target cluster '{target_cluster_id}' not found")
+
+        if target_cluster_id == "trash":
+            raise ValueError("Cannot restore to Trash cluster")
+
+        # Get procedure's tables
+        procedure_tables = set(trash_group.tables)
+
+        # Auto-reinsertion: Check for missing tables
+        tables_reinserted = []
+        for table in procedure_tables:
+            if table not in self.missing_tables:
+                continue
+
+            # Table is missing - ensure it's tracked as missing
+            # Since it's about to be used by this procedure, it won't be orphaned anymore
+            self.missing_tables.add(table)
+            tables_reinserted.append(table)
+
+        # Auto-grouping: Find group with EXACT same table set (100% similarity)
+        exact_match_group = None
+
+        if not force_new_group:
+            target_cluster = self.clusters[target_cluster_id]
+
+            for group_id in target_cluster.group_ids:
+                group = self.groups.get(group_id)
+                if not group:
+                    continue
+
+                # Check for EXACT table match (100% similarity)
+                group_tables = set(group.tables)
+
+                if procedure_tables == group_tables:
+                    # Perfect match!
+                    exact_match_group = group
+                    break
+
+        # Decision: Join existing group or create new one?
+        if exact_match_group:
+            # Join existing group (100% similarity)
+            target_group = exact_match_group
+
+            # Add procedure to group
+            target_group.procedures.append(procedure_name)
+            target_group.is_singleton = False  # Now has multiple procedures
+
+            # Tables are already identical, no need to merge
+
+            # Remove procedure from trash group
+            trash_group.procedures.remove(procedure_name)
+
+            # If trash group is now empty, delete it (auto-cleanup virtual entity)
+            if not trash_group.procedures:
+                self.clusters["trash"].group_ids.remove(trash_group.group_id)
+                self.group_order.remove(trash_group.group_id)
+                del self.groups[trash_group.group_id]
+
+            action = "joined_existing_group"
+            target_group_id = target_group.group_id
+            similarity = 1.0  # 100%
+
+        else:
+            # Create new singleton group in target cluster
+            new_group_id = procedure_name
+            suffix = 1
+            while new_group_id in self.groups:
+                suffix += 1
+                new_group_id = f"{procedure_name}_{suffix}"
+
+            new_group = ProcedureGroup(
+                group_id=new_group_id,
+                cluster_id=target_cluster_id,
+                procedures=[procedure_name],
+                tables=list(procedure_tables),
+                is_singleton=True,
+                display_name=procedure_name,
+            )
+
+            self.groups[new_group_id] = new_group
+            self.group_order.append(new_group_id)
+            self.clusters[target_cluster_id].group_ids.append(new_group_id)
+
+            # Remove procedure from trash group
+            trash_group.procedures.remove(procedure_name)
+
+            # If trash group is now empty, delete it (auto-cleanup virtual entity)
+            if not trash_group.procedures:
+                self.clusters["trash"].group_ids.remove(trash_group.group_id)
+                self.group_order.remove(trash_group.group_id)
+                del self.groups[trash_group.group_id]
+
+            action = "created_new_group"
+            target_group_id = new_group_id
+            similarity = 0.0
+
+        # Un-orphan tables that are now used
+        tables_unorphaned = []
+        for table in procedure_tables:
+            if table in self.orphaned_tables:
+                self.orphaned_tables.discard(table)
+                tables_unorphaned.append(table)
+
+        # Rebuild indexes
+        self.rebuild_indexes()
+
+        return {
+            "restored_procedure": procedure_name,
+            "target_cluster": target_cluster_id,
+            "target_group": target_group_id,
+            "action": action,
+            "similarity": similarity,
+            "exact_match": action == "joined_existing_group",
+            "tables_reinserted": tables_reinserted,
+            "tables_unorphaned": tables_unorphaned,
+        }
+
+    def restore_table(self, trash_index: int) -> Dict[str, Any]:
+        """Restore a deleted table from trash."""
+        if trash_index < 0 or trash_index >= len(self.trash):
+            raise ValueError(f"Invalid trash index: {trash_index}")
+
+        trash_item = self.trash[trash_index]
+
+        if trash_item.item_type != "table":
+            raise ValueError(f"Expected table, got {trash_item.item_type}")
+
+        table_name = trash_item.data["table_name"]
+        was_global = trash_item.data["was_global"]
+        was_orphaned = trash_item.data["was_orphaned"]
+
+        # Remove from missing tables (it's back in catalog)
+        self.missing_tables.discard(table_name)
+
+        # Restore table status flags
+        if was_orphaned:
+            self.orphaned_tables.add(table_name)
+
+        # Remove from trash
+        self.trash.pop(trash_index)
+
+        # Rebuild indexes to recalculate global tables
+        self.rebuild_indexes()
+
+        return {
+            "restored_table": table_name,
+            "was_global": was_global,
+            "was_orphaned": was_orphaned,
+        }
+
+    def list_trash(self) -> Dict[str, Any]:
+        """List all items in trash (tables + procedures in Trash cluster)."""
+        # Tables in trash list
+        tables = [
+            {
+                "index": idx,
+                **item.to_dict(),
+            }
+            for idx, item in enumerate(self.trash)
+            if item.item_type == "table"
+        ]
+
+        # Procedures in trash cluster
+        trash_cluster = self.clusters.get("trash")
+        procedures = []
+
+        if trash_cluster:
+            for group_id in trash_cluster.group_ids:
+                if group_id in self.groups:
+                    group = self.groups[group_id]
+
+                    for proc_name in group.procedures:
+                        # Find trash metadata if available
+                        trash_meta = None
+                        for item in self.trash:
+                            if item.item_type == "procedure" and item.item_id == proc_name:
+                                trash_meta = item
+                                break
+
+                        procedures.append({
+                            "procedure_name": proc_name,
+                            "group_id": group_id,
+                            "tables": group.tables,
+                            "table_count": len(group.tables),
+                            "deleted_at": trash_meta.deleted_at if trash_meta else None,
+                            "original_cluster": (
+                                trash_meta.data.get("original_cluster_id")
+                                if trash_meta else None
+                            ),
+                        })
+
+        return {
+            "tables": tables,
+            "procedures": procedures,
+            "total_count": len(tables) + len(procedures),
+        }
+
+    def empty_trash(self) -> Dict[str, Any]:
+        """Permanently delete all items in trash (both tables and procedures)."""
+        # Count items
+        table_count = sum(1 for item in self.trash if item.item_type == "table")
+
+        # Count procedures in trash cluster
+        trash_cluster = self.clusters.get("trash")
+        procedure_count = 0
+        procedures_deleted = []
+
+        if trash_cluster:
+            for group_id in list(trash_cluster.group_ids):
+                if group_id in self.groups:
+                    group = self.groups[group_id]
+                    procedures_deleted.extend(group.procedures)
+                    procedure_count += len(group.procedures)
+
+                    self.group_order.remove(group_id)
+                    del self.groups[group_id]
+
+            trash_cluster.group_ids.clear()
+
+        # Clear trash list
+        self.trash.clear()
+
+        # Rebuild indexes
+        self.rebuild_indexes()
+
+        return {
+            "deleted_tables": table_count,
+            "deleted_procedures": procedure_count,
+            "procedures": procedures_deleted,
+            "total": table_count + procedure_count,
+        }
+
+    def add_cluster(self, cluster_id: str, display_name: Optional[str] = None) -> Dict[str, Any]:
+        """Create a new cluster."""
+        if cluster_id in self.clusters:
+            raise ValueError(f"Cluster '{cluster_id}' already exists")
+
+        cluster = ClusterInfo(
+            cluster_id=cluster_id,
+            group_ids=[],
+            display_name=display_name or cluster_id,
+        )
+
+        self.clusters[cluster_id] = cluster
+        self.cluster_order.append(cluster_id)
+
+        self.rebuild_indexes()
+
+        return {
+            "created_cluster": cluster_id,
+            "display_name": cluster.display_name,
+        }
+
+    def delete_cluster_if_empty(self, cluster_identifier: str) -> Dict[str, Any]:
+        """Delete a cluster ONLY if it's empty (administrative cleanup)."""
+        cluster_id = self.find_cluster_id(cluster_identifier)
+        cluster = self.clusters[cluster_id]
+
+        # Don't allow deleting special clusters
+        if cluster_id == "trash":
+            raise ValueError("Cannot delete the Trash cluster")
+
+        # Check if cluster is empty
+        if cluster.group_ids:
+            raise ValueError(
+                f"Cannot delete cluster '{cluster_id}' - it has {len(cluster.group_ids)} groups. "
+                f"Delete or move all procedures first."
+            )
+
+        # Remove empty cluster
+        self.cluster_order.remove(cluster_id)
+        del self.clusters[cluster_id]
+
+        return {
+            "deleted_cluster": cluster_id,
+        }
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -518,13 +1069,13 @@ class ClusterState:
                 1 for gid in cluster.group_ids
                 if gid in self.groups and not self.groups[gid].is_singleton
             )
-            # Use icons instead of text labels:
-            # ⚙ for procedures, ◉ for groups, ▭ for tables
+            # Use text labels instead of icons for Graphviz compatibility:
+            # P for procedures, G for groups, T for tables
             # Escape each part individually, then join with literal \n for DOT format
             label_lines = [
                 self._escape_label(display),
                 self._escape_label(f"({cluster.cluster_id})"),
-                self._escape_label(f"⚙ {cluster.procedure_count}  ◉ {non_singleton_count}  ▭ {len(cluster.tables)}"),
+                self._escape_label(f"P:{cluster.procedure_count} G:{non_singleton_count} T:{len(cluster.tables)}"),
             ]
             safe_label = "\\n".join(label_lines)
             # Add tooltip attribute to ensure Graphviz generates <title> element in SVG
@@ -663,6 +1214,10 @@ class CommandParser:
     _re_move_procedure = re.compile(
         r"^move\s+procedure\s+(\S+)\s+to\s+cluster\s+(\S+)$", re.IGNORECASE
     )
+    _re_delete_procedure = re.compile(r"^delete\s+procedure\s+(.+)$", re.IGNORECASE)
+    _re_delete_table = re.compile(r"^delete\s+table\s+(.+)$", re.IGNORECASE)
+    _re_add_cluster = re.compile(r"^add\s+cluster\s+(\S+)(?:\s+(.+))?$", re.IGNORECASE)
+    _re_delete_cluster = re.compile(r"^delete\s+cluster\s+(\S+)$", re.IGNORECASE)
 
     def parse(self, text: str) -> Dict[str, Any]:
         text = text.strip()
@@ -684,6 +1239,25 @@ class CommandParser:
         if match := self._re_move_procedure.match(text):
             procedure_name, cluster_id = match.groups()
             return {"type": "move_procedure", "procedure": procedure_name, "cluster_id": cluster_id}
+
+        if match := self._re_delete_procedure.match(text):
+            procedure_name = match.group(1).strip('`').strip()
+            return {"type": "delete_procedure", "procedure_name": procedure_name}
+
+        if match := self._re_delete_table.match(text):
+            table_name = match.group(1).strip('`').strip()
+            return {"type": "delete_table", "table_name": table_name}
+
+        if match := self._re_add_cluster.match(text):
+            cluster_id, display_name = match.groups()
+            result = {"type": "add_cluster", "cluster_id": cluster_id}
+            if display_name:
+                result["display_name"] = display_name.strip('" ').strip()
+            return result
+
+        if match := self._re_delete_cluster.match(text):
+            cluster_id = match.group(1)
+            return {"type": "delete_cluster", "cluster_id": cluster_id}
 
         raise ValueError(f"Unrecognized command: '{text}'")
 
@@ -803,6 +1377,23 @@ class ClusterService:
                 cluster_id = command["cluster_id"]
                 new_group_id, _ = self._state.move_procedure(procedure, cluster_id)
                 message = f"Procedure '{procedure}' moved to cluster '{cluster_id}' (group '{new_group_id}')."
+            elif cmd_type == "delete_procedure":
+                procedure_name = command["procedure_name"]
+                result = self._state.delete_procedure(procedure_name)
+                message = f"Procedure '{procedure_name}' deleted and moved to trash."
+            elif cmd_type == "delete_table":
+                table_name = command["table_name"]
+                result = self._state.delete_table(table_name)
+                message = f"Table '{table_name}' deleted from catalog."
+            elif cmd_type == "add_cluster":
+                cluster_id = command["cluster_id"]
+                display_name = command.get("display_name")
+                result = self._state.add_cluster(cluster_id, display_name)
+                message = f"Cluster '{cluster_id}' created."
+            elif cmd_type == "delete_cluster":
+                cluster_id = command["cluster_id"]
+                result = self._state.delete_cluster_if_empty(cluster_id)
+                message = f"Cluster '{cluster_id}' deleted."
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported command type '{cmd_type}'.")
 
@@ -821,6 +1412,110 @@ class ClusterService:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return self.execute(command)
+
+    # --------------------------- Trash operations -------------------------- #
+
+    def delete_procedure(self, procedure_name: str) -> Dict[str, Any]:
+        """Delete a procedure and move to trash."""
+        with self._lock:
+            try:
+                result = self._state.delete_procedure(procedure_name)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Procedure '{procedure_name}' deleted and moved to trash.",
+                    "result": result,
+                }
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def delete_table(self, table_name: str) -> Dict[str, Any]:
+        """Delete a table from catalog."""
+        with self._lock:
+            try:
+                result = self._state.delete_table(table_name)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Table '{table_name}' deleted.",
+                    "result": result,
+                }
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def add_cluster(self, cluster_id: str, display_name: Optional[str] = None) -> Dict[str, Any]:
+        """Create a new cluster."""
+        with self._lock:
+            try:
+                result = self._state.add_cluster(cluster_id, display_name)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Cluster '{cluster_id}' created.",
+                    "result": result,
+                }
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def delete_cluster(self, cluster_identifier: str) -> Dict[str, Any]:
+        """Delete an empty cluster."""
+        with self._lock:
+            try:
+                result = self._state.delete_cluster_if_empty(cluster_identifier)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Cluster '{cluster_identifier}' deleted.",
+                    "result": result,
+                }
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def list_trash(self) -> Dict[str, Any]:
+        """List all items in trash."""
+        with self._lock:
+            return self._state.list_trash()
+
+    def restore_procedure(
+        self, procedure_name: str, target_cluster_id: str, force_new_group: bool = False
+    ) -> Dict[str, Any]:
+        """Restore a procedure from trash."""
+        with self._lock:
+            try:
+                result = self._state.restore_procedure(procedure_name, target_cluster_id, force_new_group)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Procedure '{procedure_name}' restored to cluster '{target_cluster_id}'.",
+                    "result": result,
+                }
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def restore_table(self, trash_index: int) -> Dict[str, Any]:
+        """Restore a table from trash."""
+        with self._lock:
+            try:
+                result = self._state.restore_table(trash_index)
+                self._save_snapshot()
+                return {
+                    "status": "ok",
+                    "message": f"Table '{result['restored_table']}' restored.",
+                    "result": result,
+                }
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def empty_trash(self) -> Dict[str, Any]:
+        """Permanently delete all trash items."""
+        with self._lock:
+            result = self._state.empty_trash()
+            self._save_snapshot()
+            return {
+                "status": "ok",
+                "message": f"Trash emptied: {result['total']} items permanently deleted.",
+                "result": result,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -892,6 +1587,65 @@ def create_app(snapshot_path: Optional[Path] = None) -> FastAPI:
         if "command" in payload:
             return service.execute_text(payload["command"])
         return service.execute(payload)
+
+    # Trash operation endpoints
+    @app.post("/api/cluster/delete/procedure")
+    def post_delete_procedure(payload: Dict[str, str]) -> Dict[str, Any]:
+        procedure_name = payload.get("procedure_name")
+        if not procedure_name:
+            raise HTTPException(status_code=400, detail="Missing 'procedure_name' in payload")
+        return service.delete_procedure(procedure_name)
+
+    @app.post("/api/cluster/delete/table")
+    def post_delete_table(payload: Dict[str, str]) -> Dict[str, Any]:
+        table_name = payload.get("table_name")
+        if not table_name:
+            raise HTTPException(status_code=400, detail="Missing 'table_name' in payload")
+        return service.delete_table(table_name)
+
+    @app.post("/api/cluster/add")
+    def post_add_cluster(payload: Dict[str, str]) -> Dict[str, Any]:
+        cluster_id = payload.get("cluster_id")
+        if not cluster_id:
+            raise HTTPException(status_code=400, detail="Missing 'cluster_id' in payload")
+        display_name = payload.get("display_name")
+        return service.add_cluster(cluster_id, display_name)
+
+    @app.post("/api/cluster/delete/cluster")
+    def post_delete_cluster(payload: Dict[str, str]) -> Dict[str, Any]:
+        cluster_id = payload.get("cluster_id")
+        if not cluster_id:
+            raise HTTPException(status_code=400, detail="Missing 'cluster_id' in payload")
+        return service.delete_cluster(cluster_id)
+
+    @app.get("/api/cluster/trash")
+    def get_trash() -> Dict[str, Any]:
+        return service.list_trash()
+
+    @app.post("/api/cluster/trash/restore")
+    def post_restore(payload: Dict[str, Any]) -> Dict[str, Any]:
+        item_type = payload.get("item_type")
+        if item_type == "procedure":
+            procedure_name = payload.get("procedure_name")
+            target_cluster_id = payload.get("target_cluster_id")
+            force_new_group = payload.get("force_new_group", False)
+            if not procedure_name or not target_cluster_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing 'procedure_name' or 'target_cluster_id' in payload"
+                )
+            return service.restore_procedure(procedure_name, target_cluster_id, force_new_group)
+        elif item_type == "table":
+            trash_index = payload.get("trash_index")
+            if trash_index is None:
+                raise HTTPException(status_code=400, detail="Missing 'trash_index' in payload")
+            return service.restore_table(trash_index)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown item_type: '{item_type}'")
+
+    @app.post("/api/cluster/trash/empty")
+    def post_empty_trash() -> Dict[str, Any]:
+        return service.empty_trash()
 
     return app
 
