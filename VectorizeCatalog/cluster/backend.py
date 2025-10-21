@@ -482,7 +482,7 @@ class ClusterState:
             group_id=trash_group_id,
             cluster_id="trash",
             procedures=[procedure_name],
-            tables=procedure_tables,
+            tables=[],  # Trash procedures have no table connections (disconnected nodes)
             is_singleton=True,
             display_name=procedure_name,
         )
@@ -1085,6 +1085,19 @@ class ClusterState:
                 f'id="cluster::{cluster.cluster_id}",URL="cluster://{cluster.cluster_id}",tooltip="{cluster.cluster_id}",label="{safe_label}"];'
             )
 
+        # Add missing tables that are not global (non-global missing tables)
+        non_global_missing = self.missing_tables - self.global_tables
+        if non_global_missing:
+            lines.append("")
+            lines.append("  // Missing tables (not global)")
+            for table in sorted(non_global_missing):
+                label = self._escape_label(table)
+                missing_label = self._escape_label(f"{table}\n(missing)")
+                lines.append(
+                    f'  "{table}" [shape=box,style="filled,bold",fillcolor="#9E9E9E",penwidth=2,'
+                    f'id="tableX::{table}",label="{missing_label}"];'
+                )
+
         # Add orphaned tables if any
         if self.orphaned_tables:
             lines.append("")
@@ -1098,10 +1111,14 @@ class ClusterState:
                 )
 
         lines.append("")
-        lines.append("  // Cluster-to-global-table edges")
+        lines.append("  // Cluster-to-table edges")
         for cluster in self.clusters.values():
             for table in cluster.tables:
+                # Connect clusters to global tables
                 if table in self.global_tables:
+                    lines.append(f'  "{cluster.cluster_id}" -- "{table}";')
+                # Also connect clusters to non-global missing tables
+                elif table in non_global_missing:
                     lines.append(f'  "{cluster.cluster_id}" -- "{table}";')
 
         lines.append("}")
@@ -1163,12 +1180,14 @@ class ClusterState:
 
         lines.append("")
         lines.append("  // Access edges")
-        for group_id in cluster.group_ids:
-            group = self.groups.get(group_id)
-            if not group:
-                continue
-            for table in group.tables:
-                lines.append(f'  "{group.group_id}" -- "{table}";')
+        # Skip edges for Trash cluster - show disconnected nodes only
+        if cluster_id != "trash":
+            for group_id in cluster.group_ids:
+                group = self.groups.get(group_id)
+                if not group:
+                    continue
+                for table in group.tables:
+                    lines.append(f'  "{group.group_id}" -- "{table}";')
 
         lines.append("}")
         return "\n".join(lines) + "\n"
@@ -1354,6 +1373,51 @@ class ClusterService:
             self._state = ClusterState.from_json(payload)
             return self._state.summary_payload()
 
+    def rebuild_from_catalog(self) -> Dict[str, Any]:
+        """Rebuild clusters.json from catalog.json (DESTRUCTIVE - creates fresh clusters).
+
+        This operation:
+        1. Reads catalog.json path from current state
+        2. Runs clustering algorithm to generate new clusters.json
+        3. Reloads the newly generated state
+        4. Discards ALL current clusters, groups, trash, and custom names
+
+        Returns:
+            Dict with status and clustering statistics
+        """
+        with self._lock:
+            from cluster.clustering import rebuild_clusters_from_catalog
+
+            # Get catalog path from current state
+            catalog_path_str = self._state.catalog_path
+            if not catalog_path_str:
+                raise ValueError("Catalog path not set in current state - cannot rebuild")
+
+            catalog_path = Path(catalog_path_str)
+            if not catalog_path.exists():
+                raise FileNotFoundError(f"Catalog file not found: {catalog_path}")
+
+            # Use existing clustering parameters
+            parameters = dict(self._state.parameters) if self._state.parameters else {}
+
+            # Rebuild clusters (this overwrites clusters.json)
+            stats = rebuild_clusters_from_catalog(
+                catalog_path=catalog_path,
+                output_path=self.snapshot_path,
+                parameters=parameters,
+            )
+
+            # Reload the newly generated snapshot
+            payload = self._load_snapshot()
+            self._state = ClusterState.from_json(payload)
+
+            return {
+                "status": "ok",
+                "message": "Clusters rebuilt from catalog",
+                "statistics": stats,
+                "summary": self._state.summary_payload(),
+            }
+
     def execute(self, command: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             cmd_type = command.get("type")
@@ -1522,10 +1586,12 @@ class ClusterService:
 # FastAPI application
 # ---------------------------------------------------------------------------
 
+# Serve from VectorizeCatalog/static/cluster (standalone mode)
 
 def create_app(snapshot_path: Optional[Path] = None) -> FastAPI:
     base_dir = Path(__file__).resolve().parent.parent
-    default_snapshot = base_dir / "output" / "cluster" / "clusters.json"
+    root_above = base_dir.parent
+    default_snapshot = root_above / "output" / "cluster" / "clusters.json"
     service = ClusterService(snapshot_path or default_snapshot)
 
     app = FastAPI(title="Cluster Editing Prototype")
@@ -1537,14 +1603,25 @@ def create_app(snapshot_path: Optional[Path] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    static_dir = Path(__file__).resolve().parent / "static" / "cluster"
+    print("[create_app] Initializing Cluster Service API")
+
+    static_dir = base_dir / "static" / "cluster"
     if static_dir.exists():
+        print(f"[create_app] Serving Cluster UI from {static_dir}")
         app.mount("/cluster-ui", StaticFiles(directory=str(static_dir)), name="cluster-ui")
 
         @app.get("/", include_in_schema=False)
         def index() -> FileResponse:
             return FileResponse(str(static_dir / "index.html"))
 
+        @app.get("/index.html", include_in_schema=False)
+        def index_html() -> FileResponse:
+            return FileResponse(str(static_dir / "index.html"))
+
+        @app.get("/favicon.ico", include_in_schema=False)
+        def favicon() -> FileResponse:
+            return FileResponse(str(static_dir / "favicon.ico"))
+    
     @app.get("/api/cluster/summary")
     def get_summary() -> Dict[str, Any]:
         return service.summary()
@@ -1646,6 +1723,29 @@ def create_app(snapshot_path: Optional[Path] = None) -> FastAPI:
     @app.post("/api/cluster/trash/empty")
     def post_empty_trash() -> Dict[str, Any]:
         return service.empty_trash()
+
+    # ---------------------------------------------------------------------------
+    # Semantic Agent Endpoint
+    # ---------------------------------------------------------------------------
+
+    from pydantic import BaseModel as PydanticBaseModel
+
+    class AgentQuery(PydanticBaseModel):
+        query: str
+        intent_override: Optional[Dict[str, Any]] = None
+        accept_proposal: bool = False
+
+    @app.post("/api/cluster/ask")
+    def cluster_ask(body: AgentQuery) -> Dict[str, Any]:
+        """Semantic agent endpoint - uses LLM to classify intent"""
+        from cluster.agent import agent_answer
+
+        return agent_answer(
+            query=body.query,
+            cluster_service=service,
+            intent_override=body.intent_override,
+            accept_proposal=body.accept_proposal,
+        )
 
     return app
 

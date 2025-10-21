@@ -280,14 +280,46 @@ async function executeCommand() {
       const result = data.result;
 
       if (result.status === 'ok') {
+        // Display the result answer if present
+        if (result.answer) {
+          contentArea.innerHTML = renderMarkdown(result.answer);
+        }
+
         showNotification(result.message || 'Command executed successfully', 'success', true);
         setStatus(result.message || 'Command executed', 'success');
+
         // Reload cluster list
         await loadClusterList();
+
+        // Refresh the current diagram view
+        if (currentTab === 'clusters') {
+          if (currentClusterId) {
+            // If viewing a specific cluster detail, reload it
+            await window.showCluster(currentClusterId);
+          } else {
+            // If viewing summary, refresh summary
+            await window.showClusterSummary();
+          }
+        }
       } else {
         showNotification(result.message || 'Command failed', 'error', false);
         setStatus(result.message || 'Command failed', 'error');
       }
+    } else if (data.type === 'error') {
+      // Error case (e.g., LLM timeout, needs_confirmation)
+      const result = data.result;
+
+      // Display error message or help text
+      if (result.answer) {
+        contentArea.innerHTML = renderMarkdown(result.answer);
+      }
+
+      showNotification(result.message || 'Could not process command', 'error', false);
+      setStatus(result.message || 'Command needs clarification', 'error');
+    } else {
+      // Unknown response type
+      showNotification('Unexpected response from server', 'error', false);
+      setStatus('Unexpected response', 'error');
     }
   } catch (e) {
     console.error('Command failed:', e);

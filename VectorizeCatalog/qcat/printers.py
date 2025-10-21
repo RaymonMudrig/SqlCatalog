@@ -3,8 +3,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Iterable
 import re
 
-from qcat.paths import OUTPUT_DIR, SQL_FILES_DIR
-from qcat.name_match import split_safe
+try:
+    from .paths import OUTPUT_DIR, SQL_FILES_DIR
+    from .name_match import split_safe
+except ImportError:
+    from paths import OUTPUT_DIR, SQL_FILES_DIR
+    from name_match import split_safe
 
 def print_item(item: Dict[str, Any], score: Optional[float], show_sql: bool = False) -> None:
     kind  = (item.get("kind") or "").lower()

@@ -2,7 +2,11 @@
 from __future__ import annotations
 import os, re, json, requests
 from typing import Dict, Optional, Any, List
-from qcat.intents import list_intents, normalize_entity_name, detect_kind_from_words
+
+try:
+    from .intents import list_intents, normalize_entity_name, detect_kind_from_words
+except ImportError:
+    from intents import list_intents, normalize_entity_name, detect_kind_from_words
 
 # =============== LM Studio config ==================
 _LM_URL = os.getenv("QCAT_LMSTUDIO_URL", "http://127.0.0.1:1234/v1/chat/completions")
@@ -240,28 +244,21 @@ def _lmstudio_classify(prompt: str) -> Optional[dict]:
 # =============== Public API ================================
 def classify_intent(prompt: str) -> Dict[str, Any]:
     """
-    Agentic classifier with LM Studio (Qwen) + heuristic fallback.
-    Returns a dict: {"intent": ..., "confidence": float, "source": "llm"|"heuristic"|"fallback", ...}
+    Qcat intent classifier using LLM ONLY (no regex/heuristic fallback).
+    Returns a dict: {"intent": ..., "confidence": float, "source": "llm"|"failed", ...}
+
+    If LLM fails, returns low confidence so agent can show available commands.
     """
-    # 1) Try LLM first
+    # Try LLM classification
     llm = _lmstudio_classify(prompt)
     if llm is not None:
-      # small safety: if the LLM couldn't extract any entity where one is needed, let heuristics try too
-      needs_entity = llm["intent"] in {
-          "list_columns_of_table", "procs_access_table", "procs_update_table",
-          "views_access_table", "tables_accessed_by_procedure", "tables_accessed_by_view",
-          "procs_called_by_procedure", "call_tree", "columns_returned_by_procedure",
-          "unused_columns_of_table", "sql_of_entity",
-      }
-      if needs_entity and not llm.get("name") and llm["intent"] != "sql_of_entity":
-          # fall back to heuristic for name extraction
-          heur = _classify_heuristic(prompt)
-          # prefer LLM's intent but borrow name if heuristic found one
-          if heur.get("name"):
-              llm["name"] = heur["name"]
-          # blend confidence a bit
-          llm["confidence"] = max(llm.get("confidence", 0.5), heur.get("confidence", 0.5) - 0.1)
-      return llm
+        return llm
 
-    # 2) Fallback to heuristics
-    return _classify_heuristic(prompt)
+    # LLM failed - return low confidence semantic fallback
+    # Agent will handle showing available commands
+    return {
+        "intent": "semantic",
+        "confidence": 0.0,
+        "source": "failed",
+        "query": prompt
+    }

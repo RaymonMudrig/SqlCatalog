@@ -6,13 +6,22 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 # Import your existing paths (names preserved)
-from qcat.paths import (
-    OUTPUT_DIR,
-    CATALOG_JSON,
-    ITEMS_JSON,
-    ITEMS_PATH,
-    EMB_PATH,
-)
+try:
+    from .paths import (
+        OUTPUT_DIR,
+        CATALOG_JSON,
+        ITEMS_JSON,
+        ITEMS_PATH,
+        EMB_PATH,
+    )
+except ImportError:
+    from paths import (
+        OUTPUT_DIR,
+        CATALOG_JSON,
+        ITEMS_JSON,
+        ITEMS_PATH,
+        EMB_PATH,
+    )
 
 def _read_json(p: Path) -> Optional[dict]:
     try:

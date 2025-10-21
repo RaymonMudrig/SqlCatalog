@@ -1,6 +1,10 @@
 from typing import List, Dict, Any, Optional
 import numpy as np
-from .embeddings import embed_query, cosine_scores
+
+try:
+    from .embeddings import embed_query, cosine_scores
+except ImportError:
+    from embeddings import embed_query, cosine_scores
 
 def semantic_search(query: str, items: List[Dict[str, Any]], emb: np.ndarray,
                     k: int, kind: str, schema: Optional[str], unused_only: bool):

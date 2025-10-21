@@ -313,7 +313,7 @@
   </div>
 
   <script>
-    const server = (new URLSearchParams(location.search)).get('server') || 'http://127.0.0.1:8000';
+    const server = (new URLSearchParams(location.search)).get('server') || window.location.origin;
     let sessionId = null;  // Track session ID across requests
 
     // Initialize collapsible sections

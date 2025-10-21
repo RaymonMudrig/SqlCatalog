@@ -1,6 +1,6 @@
 # qcat_backend.py - Semantic search backend (standalone mode)
 from __future__ import annotations
-from fastapi import FastAPI, Request, Cookie
+from fastapi import FastAPI, Request, Cookie, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,9 +8,15 @@ from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import Optional, Any, Dict, List
 import json
 import uuid
-from qcat.items import load_items
-from qcat.paths import BASE, OUTPUT_DIR, ITEMS_JSON
-from qcat.agent import agent_answer
+
+try:
+    from .items import load_items
+    from .paths import BASE, OUTPUT_DIR, ITEMS_JSON
+    from .agent import agent_answer
+except ImportError:
+    from items import load_items
+    from paths import BASE, OUTPUT_DIR, ITEMS_JSON
+    from agent import agent_answer
 
 app = FastAPI()
 
@@ -30,6 +36,8 @@ STATIC_DIR = BASE / "static" / "qcat"
 # Mount static files at /qcat-ui/
 app.mount("/qcat-ui", StaticFiles(directory=str(STATIC_DIR)), name="qcat-ui")
 
+FAVICON_PATH = STATIC_DIR / "favicon.ico"
+
 # Root redirects to qcat UI
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -39,6 +47,12 @@ def index():
 @app.get("/index.html", response_class=HTMLResponse)
 def index_html():
     return FileResponse(str(STATIC_DIR / "index.html"))
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    if FAVICON_PATH.exists():
+        return FileResponse(str(FAVICON_PATH))
+    raise HTTPException(status_code=404)
 
 ITEMS, EMB = load_items()
 
@@ -121,7 +135,7 @@ def api_ask(body: AskBody):
     # Get answer from agent
     out = agent_answer(
         query=body.prompt, items=ITEMS, emb=EMB,
-        schema_filter=body.schema, name_pattern=body.pattern,
+        schema_filter=body.schema_name, name_pattern=body.pattern,
         intent_override=body.intent_override,
         accept_proposal=body.accept_proposal,
     )

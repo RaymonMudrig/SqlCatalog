@@ -1,7 +1,11 @@
 # qcat/formatters.py
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
-from qcat import ops as K
+
+try:
+    from . import ops as K
+except ImportError:
+    import ops as K
 
 __all__ = [
     # counts / listings
@@ -201,11 +205,13 @@ def render_find_similar_sql(items: List[Dict[str, Any]],
 def render_list_all_of_kind(items, kind: str, schema: str | None = None, name_pattern: str | None = None):
     """Generic renderer used by all list_all_* wrappers."""
     try:
-        from qcat import ops as K
+        from qcat import ops as K_mod  # when running as package
+    except ImportError:
+        K_mod = K  # fallback to already-imported local module
     except Exception:
-        import qcat.ops as K  # fallback
+        K_mod = K
 
-    names = K.list_all_of_kind(items, kind, schema=schema, name_pattern=name_pattern)
+    names = K_mod.list_all_of_kind(items, kind, schema=schema, name_pattern=name_pattern)
     title_map = {"table": "Tables", "view": "Views", "procedure": "Procedures", "function": "Functions"}
     title = title_map.get(kind.lower(), f"{kind.title()}s")
     if not names:

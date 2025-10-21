@@ -1,7 +1,25 @@
 from typing import List, Dict, Any, Tuple, Optional
-from .loader import load_catalog
-from .name_match import split_safe, extract_quoted_names, choose_table_candidates, all_tables_matching_hints, choose_proc_candidates
-from .dynamic_sql import proc_hits_table
+
+try:
+    from .loader import load_catalog
+    from .name_match import (
+        split_safe,
+        extract_quoted_names,
+        choose_table_candidates,
+        all_tables_matching_hints,
+        choose_proc_candidates,
+    )
+    from .dynamic_sql import proc_hits_table
+except ImportError:
+    from loader import load_catalog
+    from name_match import (
+        split_safe,
+        extract_quoted_names,
+        choose_table_candidates,
+        all_tables_matching_hints,
+        choose_proc_candidates,
+    )
+    from dynamic_sql import proc_hits_table
 
 def _refs_contains_table(lst, tbl_safe: str) -> bool:
     for r in lst:

@@ -1,8 +1,13 @@
 import re
 import numpy as np  # <-- add this line
 from typing import List, Tuple, Dict, Any
-from .embeddings import embed_query, cosine_scores
-from .loader import load_emb
+
+try:
+    from .embeddings import embed_query, cosine_scores
+    from .loader import load_emb
+except ImportError:
+    from embeddings import embed_query, cosine_scores
+    from loader import load_emb
 
 
 # --- Name splitting / tokens ---

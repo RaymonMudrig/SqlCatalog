@@ -30,6 +30,7 @@ const commandInput = document.getElementById('command-input');
 
 const refreshSummaryBtn = document.getElementById('refresh-summary');
 const reloadSnapshotBtn = document.getElementById('reload-snapshot');
+const resetClustersBtn = document.getElementById('reset-clusters');
 const backButton = document.getElementById('back-button');
 const sidebarTabs = document.querySelectorAll('.sidebar-tab');
 const tabPanels = document.querySelectorAll('.tab-panel');
@@ -561,6 +562,57 @@ function wireGlobalActions() {
     } catch (error) {
       console.error(error);
       setStatus(error.message, 'error');
+    }
+  });
+
+  resetClustersBtn.addEventListener('click', async () => {
+    // Double confirmation for destructive operation
+    const confirmed = confirm(
+      'WARNING: Reset Clusters will rebuild clusters.json from catalog.json.\n\n' +
+      'This will PERMANENTLY DELETE:\n' +
+      '- All current clusters and groups\n' +
+      '- All trash items\n' +
+      '- All custom names and reorganizations\n\n' +
+      'This action CANNOT be undone!\n\n' +
+      'Are you sure you want to continue?'
+    );
+
+    if (!confirmed) return;
+
+    // Second confirmation
+    const doubleConfirm = confirm(
+      'FINAL WARNING!\n\n' +
+      'This will completely reset all cluster data to freshly generated clusters.\n\n' +
+      'Click OK to proceed with cluster reset, or Cancel to abort.'
+    );
+
+    if (!doubleConfirm) return;
+
+    try {
+      setStatus('Rebuilding clusters from catalog.json...', 'info');
+
+      const response = await fetchJson(`${API_BASE}/rebuild`, { method: 'POST' });
+
+      summaryData = response.summary;
+      renderClusterList();
+      updateTimestamp();
+      await loadSummaryGraph();
+
+      // Return to summary view if in detail view
+      if (currentClusterId) {
+        detailViewEl.classList.add('hidden');
+        summaryViewEl.classList.remove('hidden');
+        currentClusterId = null;
+        currentClusterDetail = null;
+        setRenameFormsEnabled(false);
+      }
+
+      const stats = response.statistics || {};
+      const statsMsg = `Clusters reset successfully! Generated ${stats.clusters || 0} clusters, ${stats.procedure_groups || 0} groups.`;
+      setStatus(statsMsg, 'success');
+    } catch (error) {
+      console.error(error);
+      setStatus('Failed to reset clusters: ' + error.message, 'error');
     }
   });
 

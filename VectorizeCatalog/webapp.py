@@ -11,13 +11,16 @@ import json
 import uuid
 from pathlib import Path
 
-# Import qcat (semantic search) components
+# Import qcat components
 from qcat.items import load_items
 from qcat.paths import BASE, OUTPUT_DIR, ITEMS_JSON
-from qcat.agent import agent_answer
+from qcat.backend import QcatService
 
 # Import cluster backend components
-from cluster_backend import ClusterService, ClusterState
+from cluster.backend import ClusterService, ClusterState
+
+# Import webapp unified agent
+from webapp.agent import agent_answer as webapp_agent_answer
 
 app = FastAPI(title="SQL Catalog - Unified")
 
@@ -43,6 +46,9 @@ app.mount("/cluster-ui", StaticFiles(directory=str(CLUSTER_STATIC)), name="clust
 # Initialize backends
 ITEMS, EMB = load_items()
 
+# Initialize qcat service
+QCAT_SERVICE = QcatService(ITEMS, EMB)
+
 # Initialize cluster service
 CLUSTER_SNAPSHOT_PATH = OUTPUT_DIR / "cluster" / "clusters.json"
 CLUSTER_SERVICE = ClusterService(CLUSTER_SNAPSHOT_PATH)
@@ -62,6 +68,11 @@ def index():
 @app.get("/index.html", response_class=HTMLResponse)
 def index_html():
     return FileResponse(str(STATIC_DIR / "index.html"))
+
+@app.get("/favicon.ico")
+def favicon():
+    """Serve favicon"""
+    return FileResponse(str(STATIC_DIR / "favicon.ico"))
 
 # ============================================================================
 # QCAT ROUTES - Semantic Search
@@ -83,7 +94,7 @@ class AskBody(BaseModel):
 
 @app.post("/api/qcat/ask")
 def qcat_ask(body: AskBody):
-    """Semantic search endpoint"""
+    """Semantic search endpoint (uses qcat agent directly)"""
     session_id = body.session_id or str(uuid.uuid4())
 
     if session_id not in SESSION_MEMORY:
@@ -92,7 +103,9 @@ def qcat_ask(body: AskBody):
             "views": set(), "functions": set()
         }
 
-    out = agent_answer(
+    # Use qcat agent directly for this endpoint
+    from qcat.agent import agent_answer as qcat_agent_answer
+    out = qcat_agent_answer(
         query=body.prompt, items=ITEMS, emb=EMB,
         schema_filter=body.schema_name, name_pattern=body.pattern,
         intent_override=body.intent_override,
@@ -133,6 +146,31 @@ def cluster_summary():
     """Get cluster summary"""
     return CLUSTER_SERVICE.summary()
 
+@app.get("/api/cluster/trash")
+def cluster_list_trash():
+    """List all items in trash"""
+    return CLUSTER_SERVICE.list_trash()
+
+@app.post("/api/cluster/trash/restore")
+def cluster_restore_trash(body: Dict[str, Any]):
+    """Restore item from trash"""
+    item_type = body.get("item_type")
+    if item_type == "procedure":
+        procedure_name = body.get("procedure_name")
+        target_cluster_id = body.get("target_cluster_id")
+        force_new_group = body.get("force_new_group", False)
+        return CLUSTER_SERVICE.restore_procedure(procedure_name, target_cluster_id, force_new_group)
+    elif item_type == "table":
+        trash_index = body.get("trash_index")
+        return CLUSTER_SERVICE.restore_table(trash_index)
+    else:
+        return {"ok": False, "message": f"Unknown item_type: {item_type}"}
+
+@app.post("/api/cluster/trash/empty")
+def cluster_empty_trash():
+    """Empty trash permanently"""
+    return CLUSTER_SERVICE.empty_trash()
+
 @app.get("/api/cluster/{cluster_id}")
 def cluster_detail(cluster_id: str):
     """Get cluster details"""
@@ -163,6 +201,11 @@ def cluster_reload():
     summary = CLUSTER_SERVICE.reload()
     return {"ok": True, "summary": summary}
 
+@app.post("/api/cluster/rebuild")
+def cluster_rebuild():
+    """Rebuild clusters from catalog.json (DESTRUCTIVE - creates fresh clusters)"""
+    return CLUSTER_SERVICE.rebuild_from_catalog()
+
 # ============================================================================
 # UNIFIED COMMAND ROUTER
 # ============================================================================
@@ -175,47 +218,70 @@ class UnifiedCommand(BaseModel):
 @app.post("/api/command")
 def unified_command(body: UnifiedCommand):
     """
-    Route command to appropriate backend:
-    - Cluster commands: "rename cluster X", "move group Y", etc.
-    - Semantic queries: everything else
+    Route command to appropriate backend using UNIFIED intent classification.
+
+    New architecture:
+      1. Single LLM call with ALL intents (cluster + qcat)
+      2. Dispatch to cluster.ops or qcat.ops directly
+      3. Format with respective formatters
+
+    This ensures "which procedures access X" goes to qcat, not cluster!
     """
-    cmd = body.command.strip().lower()
+    # Call unified webapp agent (single LLM call with ALL intents)
+    result = webapp_agent_answer(
+        query=body.command,
+        qcat_service=QCAT_SERVICE,
+        cluster_service=CLUSTER_SERVICE,
+        intent_override=None,
+        accept_proposal=False,
+    )
 
-    # Detect cluster commands
-    cluster_keywords = [
-        "rename cluster", "rename group", "move group",
-        "move procedure", "move proc", "split", "merge"
-    ]
-
-    is_cluster_cmd = any(kw in cmd for kw in cluster_keywords)
-
-    if is_cluster_cmd:
-        # Parse and execute cluster command
-        try:
-            result = CLUSTER_SERVICE.execute_text(body.command)
-            return {
-                "type": "cluster",
-                "result": result,
-                "ok": result.get("status") == "ok"
+    # Update session memory if qcat entities were returned
+    if "entities" in result and body.session_id:
+        session_id = body.session_id
+        if session_id not in SESSION_MEMORY:
+            SESSION_MEMORY[session_id] = {
+                "tables": set(), "procedures": set(),
+                "views": set(), "functions": set()
             }
-        except Exception as e:
-            return {
-                "type": "cluster",
-                "ok": False,
-                "error": str(e)
-            }
-    else:
-        # Semantic search
-        ask_body = AskBody(
-            prompt=body.command,
-            session_id=body.session_id
-        )
-        result = qcat_ask(ask_body)
+
+        entities = result.get("entities", [])
+        for entity in entities:
+            kind = entity.get("kind")
+            name = entity.get("name")
+            if kind and name:
+                plural = kind + "s"
+                if plural in SESSION_MEMORY[session_id]:
+                    SESSION_MEMORY[session_id][plural].add(name)
+
+        memory = {k: sorted(v) for k, v in SESSION_MEMORY[session_id].items()}
+        result["session_id"] = session_id
+        result["memory"] = memory
+
+    # Check if needs confirmation
+    if result.get("needs_confirmation"):
         return {
-            "type": "qcat",
+            "type": "error",
             "result": result,
-            "ok": True
+            "ok": False
         }
+
+    # Success - mark as ok
+    result["ok"] = True
+    result["status"] = "ok"
+
+    # Determine type from result (for backward compatibility)
+    if "entities" in result or "unified_diff" in result:
+        result_type = "qcat"
+    else:
+        result_type = "cluster"
+
+    return {
+        "type": result_type,
+        "result": result,
+        "ok": True,
+        "status": "ok"
+    }
 
 # ============================================================================
 # HEALTH CHECK
@@ -227,4 +293,4 @@ def ping():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8900)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

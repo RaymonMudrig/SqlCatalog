@@ -1,10 +1,17 @@
 # qcat/agent.py
 from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple, List
-from qcat import ops as K
-from qcat import formatters as F
-from qcat.llm_intent import classify_intent
-from qcat.intents import label_of, INTENTS
+
+try:
+    from . import ops as K  # package import
+    from . import formatters as F
+    from .llm_intent import classify_intent
+    from .intents import label_of, INTENTS
+except ImportError:  # fallback when executed as loose scripts
+    import ops as K
+    import formatters as F
+    from llm_intent import classify_intent
+    from intents import label_of, INTENTS
 
 CONFIRM_THRESHOLD = 0.70  # propose if below this
 
@@ -96,16 +103,22 @@ def agent_answer(
 
     intent = L.get("intent")
 
-    # 2) If not confident, propose to user
+    # 2) If not confident, show available commands
     if intent == "semantic" or float(L.get("confidence", 0)) < CONFIRM_THRESHOLD:
-        # Build a short human message
-        guess = L.get("intent", "semantic")
-        guess_label = label_of(guess) if guess in INTENTS else "semantic"
-        props = {k: v for k, v in L.items() if k not in ("intent", "confidence", "source")}
+        # Build list of available qcat commands
+        from qcat.intents import INTENT_LABELS
+        commands_list = "\n".join([f"- **{label}** (`{intent_id}`)" for intent_id, label in INTENT_LABELS.items()])
+
         return {
-            "answer": f"I think you meant: **{guess_label}**.\n\n"
-                      f"_Parsed:_ `{props}`\n\n"
-                      f"Click **Accept** to run this, or refine your question.",
+            "answer": f"""## Could not resolve your catalog query
+
+I tried to understand your request but couldn't confidently determine what catalog operation you want.
+
+### Available Catalog Query Commands
+{commands_list}
+
+**Tip**: Try rephrasing your request to match one of the above command patterns.
+""",
             "needs_confirmation": True,
             "proposal": L,
         }

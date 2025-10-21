@@ -6,7 +6,24 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from qcat.paths import CATALOG_JSON, ITEMS_JSON, SQL_EXPORTS_TABLES, SQL_EXPORTS_VIEWS, SQL_EXPORTS_PROCEDURES, SQL_EXPORTS_FUNCTIONS
+try:
+    from .paths import (
+        CATALOG_JSON,
+        ITEMS_JSON,
+        SQL_EXPORTS_TABLES,
+        SQL_EXPORTS_VIEWS,
+        SQL_EXPORTS_PROCEDURES,
+        SQL_EXPORTS_FUNCTIONS,
+    )
+except ImportError:
+    from paths import (
+        CATALOG_JSON,
+        ITEMS_JSON,
+        SQL_EXPORTS_TABLES,
+        SQL_EXPORTS_VIEWS,
+        SQL_EXPORTS_PROCEDURES,
+        SQL_EXPORTS_FUNCTIONS,
+    )
 
 def _read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:

@@ -548,3 +548,181 @@ main {
   color: var(--danger);
 }
 
+/* ============================================================================
+   TRASH SECTION
+   ============================================================================ */
+
+#trash-section {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.trash-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.trash-header:hover {
+  background: #e5e7eb;
+}
+
+.trash-header h3 {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+#trash-toggle-btn {
+  background: none;
+  border: none;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  transition: transform 0.2s;
+}
+
+#trash-toggle-btn.expanded {
+  transform: rotate(180deg);
+}
+
+.trash-content {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+}
+
+.trash-empty {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 1rem;
+  margin: 0;
+}
+
+.trash-section-group {
+  margin-bottom: 1rem;
+}
+
+.trash-section-group h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.5rem;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.trash-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem 0;
+}
+
+.trash-item {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.trash-item:hover {
+  background: #e6f2ff;
+}
+
+.trash-item.selected {
+  background: #dbeafe;
+  border-left: 3px solid var(--accent);
+  padding-left: calc(0.5rem - 3px);
+  font-weight: 500;
+}
+
+#entity-action-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  margin-top: 1rem;
+}
+
+.trash-item-info h4 {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.info-details {
+  margin-bottom: 0.75rem;
+}
+
+.info-details p {
+  margin: 0.25rem 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.info-details strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.info-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.info-actions .restore-btn {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.info-actions .restore-btn:hover {
+  background: var(--accent-hover);
+}
+
+#trash-actions {
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.danger-btn {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.danger-btn:hover {
+  background: #b91c1c;
+}
+

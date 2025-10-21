@@ -1,6 +1,10 @@
 import re
 from typing import List, Optional, Dict, Any
-from .name_match import split_safe
+
+try:
+    from .name_match import split_safe
+except ImportError:
+    from name_match import split_safe
 
 def _escape(name: str) -> str:
     return re.escape(name)

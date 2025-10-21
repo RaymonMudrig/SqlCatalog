@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple, Set, Iterable
 import re, difflib, html
 
-from qcli.printers import read_sql_from_item
+try:
+    from .printers import read_sql_from_item
+except ImportError:
+    from printers import read_sql_from_item
 
 # Map kind -> section key in catalog.json
 _SECTION_BY_KIND = {
@@ -81,6 +84,25 @@ def as_items_list(obj) -> List[Dict[str, Any]]:
     def _safe(schema: Optional[str], name: str) -> str:
         return f"{schema}·{name}" if schema else name
 
+    def _normalize_safe_name(schema: Optional[str], suggested: str, fallback: str) -> str:
+        """
+        Ensure we don't double-prefix the schema when Safe_Name already contains it.
+        Catalog exports sometimes store Safe_Name as 'dbo.Table' (with dot) or
+        'dbo·Table' (with middle dot). Respect either form and only synthesize when
+        the schema prefix is missing entirely.
+        """
+        sname = suggested or fallback
+        if not sname:
+            return _safe(schema, fallback)
+
+        schema_norm = (schema or "").strip("[]").lower()
+        s_norm = sname.strip().lower()
+        if "·" in sname:
+            return sname  # already using safe separator
+        if schema_norm and s_norm.startswith(f"{schema_norm}."):
+            return sname  # already schema-qualified with dot
+        return _safe(schema, sname)
+
     # 4) Tables from catalog-like dict
     tables = source.get("Tables") or source.get("tables") or {}
     if isinstance(tables, dict):
@@ -89,8 +111,7 @@ def as_items_list(obj) -> List[Dict[str, Any]]:
             schema = meta.get("Schema") or meta.get("schema") or ""
             name = meta.get("Original_Name") or meta.get("Name") or key_name
             sname = meta.get("Safe_Name") or meta.get("safe_name") or name
-            # If Safe_Name already has schema separator, use it as-is; otherwise build it
-            safe_name_final = sname if "·" in sname else _safe(schema, sname)
+            safe_name_final = _normalize_safe_name(schema, sname, name)
             item = {
                 "kind": "table",
                 "schema": schema,
@@ -116,8 +137,7 @@ def as_items_list(obj) -> List[Dict[str, Any]]:
             schema = meta.get("Schema") or meta.get("schema") or ""
             name = meta.get("Original_Name") or meta.get("Name") or key_name
             sname = meta.get("Safe_Name") or meta.get("safe_name") or name
-            # If Safe_Name already has schema separator, use it as-is; otherwise build it
-            safe_name_final = sname if "·" in sname else _safe(schema, sname)
+            safe_name_final = _normalize_safe_name(schema, sname, name)
             item = {
                 "kind": kind,
                 "schema": schema,
@@ -798,18 +818,20 @@ def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> 
         if it:
             return it
 
-    # 2) Try across all kinds (or restricted if kind is valid)
-    for k in ("table", "view", "procedure", "function"):
-        if not wildcard and k != kind_l:
-            continue
+    # After preferring the requested kind, fall back to other kinds if needed.
+    search_order = ["table", "view", "procedure", "function"]
+    # If a specific kind was requested, look at the others after the initial attempt.
+    if not wildcard:
+        search_order = [k for k in search_order if k != kind_l] + [kind_l]
+
+    # 2) Try exact lookup across candidate kinds
+    for k in search_order:
         it = _find_item(items, k, name, fuzzy=False)
         if it:
             return it
 
-    # 3) Fuzzy fallback across allowed kinds
-    for k in ("table", "view", "procedure", "function"):
-        if not wildcard and k != kind_l:
-            continue
+    # 3) Fuzzy fallback across candidate kinds
+    for k in search_order:
         it = _find_item(items, k, name, fuzzy=True)
         if it:
             return it
@@ -817,6 +839,7 @@ def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> 
     return None
 
 def get_sql(items: List[Dict[str, Any]], kind: Optional[str], name: str):
+    print(f"[ops] get_sql called with kind={kind} name={name}")
     it = _get_entity(items, kind, name)
     if not it: return None, None, None
     sql, src = read_sql_from_item(it)
