@@ -291,6 +291,11 @@ async function executeCommand() {
         // Reload cluster list
         await loadClusterList();
 
+        // Reload trash (to show newly deleted items or reflect changes)
+        if (window.loadTrash) {
+          await window.loadTrash();
+        }
+
         // Refresh the current diagram view
         if (currentTab === 'clusters') {
           if (currentClusterId) {

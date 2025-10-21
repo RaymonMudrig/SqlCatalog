@@ -194,51 +194,54 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
 
     if intent == "procs_access_table":
         result = qcat_ops.procs_access_table(items, name)
-        return {"answer": qcat_fmt.render_procs_access_table(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_procs_access_table(items, name), "entities": result}
 
     if intent == "procs_update_table":
         result = qcat_ops.procs_update_table(items, name)
-        return {"answer": qcat_fmt.render_procs_update_table(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_procs_update_table(items, name), "entities": result}
 
     if intent == "views_access_table":
         result = qcat_ops.views_access_table(items, name)
-        return {"answer": qcat_fmt.render_views_access_table(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_views_access_table(items, name), "entities": result}
 
     if intent == "tables_accessed_by_procedure":
         result = qcat_ops.tables_accessed_by_procedure(items, name)
-        return {"answer": qcat_fmt.render_tables_accessed_by_procedure(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_tables_accessed_by_procedure(items, name), "entities": result}
 
     if intent == "tables_accessed_by_view":
         result = qcat_ops.tables_accessed_by_view(items, name)
-        return {"answer": qcat_fmt.render_tables_accessed_by_view(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_tables_accessed_by_view(items, name), "entities": result}
 
     if intent == "unaccessed_tables":
         result = qcat_ops.unaccessed_tables(items)
-        return {"answer": qcat_fmt.render_unaccessed_tables(result), "entities": result}
+        return {"answer": qcat_fmt.render_unaccessed_tables(items), "entities": result}
 
     if intent == "procs_called_by_procedure":
         result = qcat_ops.procs_called_by_procedure(items, name)
-        return {"answer": qcat_fmt.render_procs_called_by_procedure(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_procs_called_by_procedure(items, name), "entities": result}
 
     if intent == "call_tree":
         result = qcat_ops.call_tree(items, name)
-        return {"answer": qcat_fmt.render_call_tree(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_call_tree(items, name), "entities": result}
 
     if intent == "list_columns_of_table":
         result = qcat_ops.list_columns_of_table(items, name)
-        return {"answer": qcat_fmt.render_list_columns_of_table(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_list_columns_of_table(items, name), "entities": result}
 
     if intent == "columns_returned_by_procedure":
         result = qcat_ops.columns_returned_by_procedure(items, name)
-        return {"answer": qcat_fmt.render_columns_returned_by_procedure(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_columns_returned_by_procedure(items, name), "entities": result}
 
     if intent == "unused_columns_of_table":
         result = qcat_ops.unused_columns_of_table(items, name)
-        return {"answer": qcat_fmt.render_unused_columns_of_table(result, name), "entities": result}
+        return {"answer": qcat_fmt.render_unused_columns_of_table(items, name), "entities": result}
 
     if intent == "sql_of_entity":
-        result = qcat_ops.sql_of_entity(items, name, kind)
-        return {"answer": qcat_fmt.render_sql_of_entity(result, name), "entities": [result] if result else []}
+        # render_sql_of_entity handles everything internally via get_sql()
+        answer = qcat_fmt.render_sql_of_entity(items, kind, name)
+        # Create entity dict for memory
+        entity = {"kind": kind or "any", "name": name}
+        return {"answer": answer, "entities": [entity], "contains_sql": True}
 
     if intent == "list_all_tables":
         schema = params.get("schema")
@@ -274,11 +277,15 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         return {"answer": answer, "entities": entities}
 
     if intent == "compare_sql":
-        result = qcat_ops.compare_sql(items, name_a, name_b)
-        return {"answer": qcat_fmt.render_compare_sql(result, name_a, name_b), "unified_diff": result.get("unified_diff")}
+        # Extract kinds if provided, otherwise None (auto-detect)
+        kind_a = params.get("kind_a")
+        kind_b = params.get("kind_b")
+        result = qcat_ops.compare_sql(items, kind_a, name_a, kind_b, name_b)
+        return {"answer": qcat_fmt.render_compare_sql(items, kind_a, name_a, kind_b, name_b), "unified_diff": result.get("unified_diff")}
 
     if intent == "find_similar_sql":
         result = qcat_ops.find_similar_sql(items, emb, name, k)
-        return {"answer": qcat_fmt.render_find_similar_sql(result, name), "entities": result}
+        threshold = params.get("threshold", 50.0)
+        return {"answer": qcat_fmt.render_find_similar_sql(items, kind, name, threshold), "entities": result}
 
     return {"answer": f"Sorry, I couldn't handle qcat intent `{intent}`."}

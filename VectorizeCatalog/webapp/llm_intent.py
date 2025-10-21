@@ -58,7 +58,9 @@ Return STRICT JSON ONLY (no prose). Output schema:
   "name": "<entity name>",
   "name_a": "<first entity name>",
   "name_b": "<second entity name>",
-  "kind": "<table|view|procedure|function>"
+  "kind": "<table|view|procedure|function>",
+  "kind_a": "<kind of first entity>",
+  "kind_b": "<kind of second entity>"
 }}
 
 Rules:
@@ -78,7 +80,8 @@ CLUSTER:
 QCAT:
 - "which procedures access Order table" -> {{"intent": "procs_access_table", "backend": "qcat", "confidence": 1.0, "name": "Order", "kind": "table"}}
 - "show me all tables" -> {{"intent": "list_all_tables", "backend": "qcat", "confidence": 1.0}}
-- "compare dbo.Order with dbo.Order_Archive" -> {{"intent": "compare_sql", "backend": "qcat", "confidence": 1.0, "name_a": "dbo.Order", "name_b": "dbo.Order_Archive"}}
+- "compare dbo.Order with dbo.Order_Archive" -> {{"intent": "compare_sql", "backend": "qcat", "confidence": 1.0, "name_a": "dbo.Order", "name_b": "dbo.Order_Archive", "kind_a": null, "kind_b": null}}
+- "compare table dbo.Order with table dbo.Order_Archive" -> {{"intent": "compare_sql", "backend": "qcat", "confidence": 1.0, "name_a": "dbo.Order", "kind_a": "table", "name_b": "dbo.Order_Archive", "kind_b": "table"}}
 - "list columns of Customer table" -> {{"intent": "list_columns_of_table", "backend": "qcat", "confidence": 1.0, "name": "Customer", "kind": "table"}}
 """
 
