@@ -302,13 +302,24 @@ async function showEntityActions(entity) {
       <button onclick="queryTable('${cleanId}')">Query this Table</button>
       <button onclick="findProceduresUsingTable('${cleanId}')">Find Procedures Using</button>
       <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
+      <button onclick="deleteTable('${cleanId}')" class="danger-btn">Delete Table</button>
     `;
   } else if (entity.type === 'group') {
-    actions = `
-      <button onclick="showGroupDetails('${cleanId}')">View Group Details</button>
-      <button onclick="moveGroupToCluster('${cleanId}')">Move to Another Cluster</button>
-      <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
-    `;
+    // For singleton groups (single procedure), show delete procedure option
+    if (isSingleton) {
+      actions = `
+        <button onclick="showGroupDetails('${cleanId}')">View Group Details</button>
+        <button onclick="moveGroupToCluster('${cleanId}')">Move to Another Cluster</button>
+        <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
+        <button onclick="deleteProcedure('${cleanId}')" class="danger-btn">Delete Procedure</button>
+      `;
+    } else {
+      actions = `
+        <button onclick="showGroupDetails('${cleanId}')">View Group Details</button>
+        <button onclick="moveGroupToCluster('${cleanId}')">Move to Another Cluster</button>
+        <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
+      `;
+    }
   } else if (entity.type === 'cluster') {
     actions = `
       <button onclick="showCluster('${cleanId}')">View Cluster Details</button>
@@ -457,6 +468,96 @@ window.addToPrompt = function(entityName) {
 
   promptInput.focus();
   promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+};
+
+window.deleteProcedure = async function(procedureName) {
+  if (!confirm(`Delete procedure '${procedureName}'? It will be moved to trash.`)) {
+    return;
+  }
+
+  try {
+    showNotification('Deleting procedure...', 'loading', false);
+
+    // Use unified command endpoint with explicit "procedure" keyword to avoid misclassification
+    const res = await fetch(`${API_BASE}/api/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: `delete procedure \`${procedureName}\``
+      })
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      showNotification('Procedure deleted successfully', 'success', true);
+      setStatus('Procedure deleted', 'success');
+
+      // Reload clusters and trash
+      await loadClusterList();
+      await loadTrash();
+
+      // Refresh current view
+      if (currentClusterId) {
+        await showCluster(currentClusterId);
+      } else {
+        await showClusterSummary();
+      }
+    } else {
+      const errorMsg = data.result?.answer || data.message || 'Failed to delete procedure';
+      showNotification(errorMsg, 'error', false);
+      setStatus('Failed to delete procedure', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to delete procedure:', e);
+    showNotification('Failed to delete procedure: ' + e.message, 'error', false);
+    setStatus('Failed to delete procedure', 'error');
+  }
+};
+
+window.deleteTable = async function(tableName) {
+  if (!confirm(`Delete table '${tableName}' from catalog? It will be moved to trash.`)) {
+    return;
+  }
+
+  try {
+    showNotification('Deleting table...', 'loading', false);
+
+    // Use unified command endpoint with explicit "table" keyword
+    const res = await fetch(`${API_BASE}/api/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: `delete table \`${tableName}\``
+      })
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      showNotification('Table deleted successfully', 'success', true);
+      setStatus('Table deleted', 'success');
+
+      // Reload clusters and trash
+      await loadClusterList();
+      await loadTrash();
+
+      // Refresh current view
+      if (currentClusterId) {
+        await showCluster(currentClusterId);
+      } else {
+        await showClusterSummary();
+      }
+    } else {
+      const errorMsg = data.result?.answer || data.message || 'Failed to delete table';
+      showNotification(errorMsg, 'error', false);
+      setStatus('Failed to delete table', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to delete table:', e);
+    showNotification('Failed to delete table: ' + e.message, 'error', false);
+    setStatus('Failed to delete table', 'error');
+  }
 };
 
 // Make functions globally available

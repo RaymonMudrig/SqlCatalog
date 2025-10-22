@@ -31,36 +31,60 @@ def render_move_procedure(result: Dict[str, Any]) -> str:
     return f"✗ Error: {result.get('error', 'Unknown error')}"
 
 def render_delete_procedure(result: Dict[str, Any]) -> str:
-    """Format delete procedure result"""
+    """Format delete procedure result
+
+    Handles both formats:
+    - Wrapped: {"status": "ok", "message": "...", "result": {...}}
+    - Raw: {"deleted_procedure": "...", "original_group": "...", ...}
+    """
+    # Check if wrapped format
     if result.get("status") == "ok":
         lines = [f"✓ {result.get('message', 'Procedure deleted')}"]
+        r = result.get("result", {})
+    # Raw format from ops
+    elif "deleted_procedure" in result:
+        proc_name = result.get("deleted_procedure", "Unknown")
+        lines = [f"✓ Procedure `{proc_name}` deleted and moved to trash."]
+        r = result
+    else:
+        return f"✗ Error: {result.get('error', 'Unknown error')}"
 
-        if "result" in result:
-            r = result["result"]
-            if r.get("tables_now_orphaned"):
-                lines.append(f"\n**Tables now orphaned:** {', '.join(r['tables_now_orphaned'])}")
-            if r.get("tables_auto_removed"):
-                lines.append(f"**Virtual tables removed:** {', '.join(r['tables_auto_removed'])}")
-            if r.get("empty_group_deleted"):
-                lines.append(f"**Empty group auto-deleted:** `{r.get('original_group')}`")
+    # Add details
+    if r.get("tables_now_orphaned"):
+        lines.append(f"\n**Tables now orphaned:** {', '.join(r['tables_now_orphaned'])}")
+    if r.get("tables_auto_removed"):
+        lines.append(f"**Virtual tables removed:** {', '.join(r['tables_auto_removed'])}")
+    if r.get("empty_group_deleted"):
+        lines.append(f"**Empty group auto-deleted:** `{r.get('original_group')}`")
 
-        return "\n".join(lines)
-    return f"✗ Error: {result.get('error', 'Unknown error')}"
+    return "\n".join(lines)
 
 def render_delete_table(result: Dict[str, Any]) -> str:
-    """Format delete table result"""
+    """Format delete table result
+
+    Handles both formats:
+    - Wrapped: {"status": "ok", "message": "...", "result": {...}}
+    - Raw: {"deleted_table": "...", "became_missing": ..., ...}
+    """
+    # Check if wrapped format
     if result.get("status") == "ok":
         lines = [f"✓ {result.get('message', 'Table deleted')}"]
+        r = result.get("result", {})
+    # Raw format from ops
+    elif "deleted_table" in result:
+        table_name = result.get("deleted_table", "Unknown")
+        lines = [f"✓ Table `{table_name}` deleted from catalog."]
+        r = result
+    else:
+        return f"✗ Error: {result.get('error', 'Unknown error')}"
 
-        if "result" in result:
-            r = result["result"]
-            if r.get("became_missing"):
-                lines.append(f"\n**Note:** Table is still referenced by procedures - marked as missing")
-            if r.get("referencing_groups"):
-                lines.append(f"**Referenced by groups:** {', '.join(r['referencing_groups'])}")
+    # Add details
+    if r.get("became_missing"):
+        lines.append(f"\n**Note:** Table is still referenced by procedures - marked as missing")
+    if r.get("referencing_groups"):
+        lines.append(f"**Referenced by groups:** {', '.join(r['referencing_groups'])}")
 
-        return "\n".join(lines)
-    return f"✗ Error: {result.get('error', 'Unknown error')}"
+    return "\n".join(lines)
 
 def render_add_cluster(result: Dict[str, Any]) -> str:
     """Format add cluster result"""

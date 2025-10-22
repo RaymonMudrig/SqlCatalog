@@ -198,12 +198,22 @@ def _names_for_match(it: Dict[str, Any]) -> Tuple[Optional[str], List[str]]:
         v = it.get(k) or _ci_get(it, k)
         if not v: continue
         if isinstance(v, str):
+            # Handle both middle dot (·) and period (.) as schema separators
             if "·" in v:
                 parts = v.split("·", 1)
                 if len(parts) == 2:
                     if not schema: schema = parts[0]
                     cands.append(parts[1])
                 else:
+                    cands.append(v)
+            elif "." in v and schema:
+                # Check if this looks like schema.name format
+                parts = v.split(".", 1)
+                if len(parts) == 2 and parts[0].lower() == schema.lower():
+                    # It's a schema-qualified name with period separator
+                    cands.append(parts[1])
+                else:
+                    # It's a name with a period in it (not a schema separator)
                     cands.append(v)
             else:
                 cands.append(v)
@@ -231,6 +241,7 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             continue
         for nm in cands:
             if (nm or "").lower() == wl_base:
+                print(f"[ops] _find_item exact match found: {nm}")
                 return it
 
     print(f"[ops] _find_item exact match failed, trying wl_schema={wl_schema}, fuzzy={fuzzy}")
@@ -345,6 +356,14 @@ def _build_by_safe(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             if nm:
                 s = _safe(schema, nm) if schema else nm
         if isinstance(s, str):
+            # Normalize: convert period separator to middle dot for consistent lookup
+            # This handles both "schema.name" and "schema·name" formats
+            if "." in s and "·" not in s:
+                schema = it.get("schema") or _ci_get(it, "Schema") or ""
+                if schema and s.lower().startswith(schema.lower() + "."):
+                    # It's schema.name format - convert to schema·name
+                    base_name = s[len(schema) + 1:]
+                    s = _safe(schema, base_name)
             by[s] = it
     return by
 
@@ -451,9 +470,11 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
     by_safe = _build_by_safe(items)
     refs = _ci_get(t, "Referenced_By") or []
     results: List[Dict[str, Any]] = []
+    print(f"[ops] procs_access_table found {len(refs)} references in Referenced_By")
     seen: Set[str] = set()
 
     def _compose_safe(entry: Any) -> Optional[str]:
+        print(f"[ops] _compose_safe called with entry={entry}")
         if not isinstance(entry, dict):
             return None
         sname = entry.get("Safe_Name")
@@ -461,6 +482,14 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
             return None
         if "·" in sname:
             return sname
+        # If Safe_Name has period separator (e.g., "WebTrading.UpdateStockFromDatafeed"),
+        # convert it to middle dot format to match items' safe_name
+        if "." in sname:
+            schema = entry.get("Schema") or ""
+            if schema and sname.lower().startswith(schema.lower() + "."):
+                # Extract base name after schema prefix
+                base_name = sname[len(schema) + 1:]
+                return _safe(schema, base_name)
         schema = entry.get("Schema") or ""
         return _safe(schema, sname) if schema else sname
 
@@ -468,12 +497,15 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
         # Accept if AccessType is 'read' OR not specified (backward compat)
         access_type = e.get("AccessType") if isinstance(e, dict) else None
         # Skip writes explicitly - allow reads and None (for old catalog.json that has no AccessType)
-        if access_type == "write":
-            continue
+
+        # if access_type == "write":
+        #     continue
+
         s = _compose_safe(e)
         if not s or s in seen:
             continue
         it = by_safe.get(s)
+        print(f"[ops] procs_access_table checking safe_name={s}, found item={it}")
         if it and (it.get("kind") or "").lower() == "procedure":
             seen.add(s)
             results.append(it)
@@ -500,6 +532,14 @@ def procs_update_table(items: List[Dict[str, Any]], table_name: str) -> List[Dic
             return None
         if "·" in sname:
             return sname
+        # If Safe_Name has period separator (e.g., "WebTrading.UpdateStockFromDatafeed"),
+        # convert it to middle dot format to match items' safe_name
+        if "." in sname:
+            schema = entry.get("Schema") or ""
+            if schema and sname.lower().startswith(schema.lower() + "."):
+                # Extract base name after schema prefix
+                base_name = sname[len(schema) + 1:]
+                return _safe(schema, base_name)
         schema = entry.get("Schema") or ""
         return _safe(schema, sname) if schema else sname
 
@@ -533,10 +573,24 @@ def views_access_table(items: List[Dict[str, Any]], table_name: str) -> List[Dic
         sname = e.get("Safe_Name")
         if not sname:
             continue
-        if "·" not in sname:
+        if "·" in sname:
+            # Already uses middle dot separator
+            pass
+        elif "." in sname:
+            # If Safe_Name has period separator, convert to middle dot format
+            sch = e.get("Schema") or ""
+            if sch and sname.lower().startswith(sch.lower() + "."):
+                base_name = sname[len(sch) + 1:]
+                sname = _safe(sch, base_name)
+            else:
+                # No schema prefix, just use as-is
+                sch = e.get("Schema") or ""
+                sname = _safe(sch, sname) if sch else sname
+        else:
+            # No separator in name, add schema prefix
             sch = e.get("Schema") or ""
             sname = _safe(sch, sname) if sch else sname
-        if sname in seen: 
+        if sname in seen:
             continue
         it = by_safe.get(sname)
         if it and (it.get("kind") or "").lower() == "view":

@@ -12,7 +12,7 @@ Flow:
 """
 from __future__ import annotations
 from typing import Any, Dict, Optional
-from webapp.llm_intent import classify_intent, ALL_INTENTS
+from webapp_lib.llm_intent import classify_intent, ALL_INTENTS
 from cluster import ops as cluster_ops, formatters as cluster_fmt
 from qcat import ops as qcat_ops, formatters as qcat_fmt
 

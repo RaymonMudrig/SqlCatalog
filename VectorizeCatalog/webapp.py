@@ -20,7 +20,7 @@ from qcat.backend import QcatService
 from cluster.backend import ClusterService, ClusterState
 
 # Import webapp unified agent
-from webapp.agent import agent_answer as webapp_agent_answer
+from webapp_lib.agent import agent_answer as webapp_agent_answer
 
 app = FastAPI(title="SQL Catalog - Unified")
 
@@ -264,6 +264,16 @@ def unified_command(body: UnifiedCommand):
             "type": "error",
             "result": result,
             "ok": False
+        }
+
+    # Check if operation failed (answer contains "Error")
+    answer = result.get("answer", "")
+    if answer.startswith("Error") or answer.startswith("✗"):
+        return {
+            "type": "error",
+            "result": result,
+            "ok": False,
+            "status": "error"
         }
 
     # Success - mark as ok
