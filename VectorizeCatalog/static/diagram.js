@@ -301,8 +301,8 @@ async function showEntityActions(entity) {
     actions = `
       <button onclick="queryTable('${cleanId}')">Query this Table</button>
       <button onclick="findProceduresUsingTable('${cleanId}')">Find Procedures Using</button>
-      <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
       <button onclick="deleteTable('${cleanId}')" class="danger-btn">Delete Table</button>
+      <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
     `;
   } else if (entity.type === 'group') {
     // For singleton groups (single procedure), show delete procedure option
@@ -310,13 +310,14 @@ async function showEntityActions(entity) {
       actions = `
         <button onclick="showGroupDetails('${cleanId}')">View Group Details</button>
         <button onclick="moveGroupToCluster('${cleanId}')">Move to Another Cluster</button>
-        <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
         <button onclick="deleteProcedure('${cleanId}')" class="danger-btn">Delete Procedure</button>
+        <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
       `;
     } else {
       actions = `
         <button onclick="showGroupDetails('${cleanId}')">View Group Details</button>
         <button onclick="moveGroupToCluster('${cleanId}')">Move to Another Cluster</button>
+        <button onclick="deleteGroup('${cleanId}')" class="danger-btn">Delete All Procedures</button>
         <button onclick="addToPrompt('${cleanId}')" class="secondary">Add to Prompt</button>
       `;
     }
@@ -402,6 +403,20 @@ window.showGroupDetails = async function(groupId) {
     // Find the group data from clusterData
     let groupData = null;
     let clusterName = null;
+    let missingTables = new Set();
+
+    // First, fetch summary to get missing tables list
+    const summaryRes = await fetch(`${API_BASE}/api/cluster/summary`);
+    const summaryData = await summaryRes.json();
+
+    // Extract missing tables from table_nodes
+    if (summaryData.table_nodes) {
+      summaryData.table_nodes.forEach(node => {
+        if (node.is_missing) {
+          missingTables.add(node.table);
+        }
+      });
+    }
 
     for (const cluster of clusterData.clusters) {
       const res = await fetch(`${API_BASE}/api/cluster/${cluster.cluster_id}`);
@@ -423,10 +438,39 @@ window.showGroupDetails = async function(groupId) {
     // Build HTML to display group details
     const displayName = groupData.display_name || groupData.group_id;
     const proceduresList = groupData.procedures.map(p => `<li><code>${p}</code></li>`).join('');
-    const tablesList = groupData.tables.map(t => `<li><code>${t}</code></li>`).join('');
+
+    // For tables, mark missing tables with special styling (not clickable)
+    const tablesList = groupData.tables.map(t => {
+      if (missingTables.has(t)) {
+        // Missing table - render as plain text with styling, not clickable
+        return `<li><span class="missing-table" title="Missing table (doesn't exist in catalog)">${t}</span> <span style="color: #999;">(missing)</span></li>`;
+      } else {
+        // Normal table - wrap in code to make clickable
+        return `<li><code>${t}</code></li>`;
+      }
+    }).join('');
+
+    // Find the cluster info for breadcrumb
+    let clusterId = null;
+    for (const cluster of clusterData.clusters) {
+      const res = await fetch(`${API_BASE}/api/cluster/${cluster.cluster_id}`);
+      const data = await res.json();
+      if (data.groups.find(g => g.group_id === groupId)) {
+        clusterId = cluster.cluster_id;
+        break;
+      }
+    }
 
     const html = `
       <div style="padding: 1rem;">
+        <div class="breadcrumb">
+          <a href="#" onclick="showClusterSummary(); return false;">Summary</a>
+          <span class="breadcrumb-separator">→</span>
+          <a href="#" onclick="showCluster('${clusterId}'); return false;">${clusterName}</a>
+          <span class="breadcrumb-separator">→</span>
+          <span class="breadcrumb-current">${displayName}</span>
+        </div>
+
         <h2>Procedure Group: ${displayName}</h2>
         <p><strong>Group ID:</strong> ${groupData.group_id}</p>
         <p><strong>Cluster:</strong> ${clusterName}</p>
@@ -441,6 +485,12 @@ window.showGroupDetails = async function(groupId) {
     `;
 
     contentArea.innerHTML = html;
+
+    // Make entities clickable (procedures and non-missing tables)
+    if (typeof window.makeEntitiesClickable === 'function') {
+      window.makeEntitiesClickable(contentArea);
+    }
+
     setStatus(`Viewing group ${displayName}`, 'info');
   } catch (e) {
     console.error('Failed to load group details:', e);
@@ -557,6 +607,106 @@ window.deleteTable = async function(tableName) {
     console.error('Failed to delete table:', e);
     showNotification('Failed to delete table: ' + e.message, 'error', false);
     setStatus('Failed to delete table', 'error');
+  }
+};
+
+window.deleteGroup = async function(groupId) {
+  try {
+    // First, fetch the group data to get the list of procedures
+    let groupData = null;
+    let clusterName = null;
+
+    for (const cluster of clusterData.clusters) {
+      const res = await fetch(`${API_BASE}/api/cluster/${cluster.cluster_id}`);
+      const data = await res.json();
+
+      const foundGroup = data.groups.find(g => g.group_id === groupId);
+      if (foundGroup) {
+        groupData = foundGroup;
+        clusterName = cluster.display_name || cluster.cluster_id;
+        break;
+      }
+    }
+
+    if (!groupData) {
+      showNotification(`Group ${groupId} not found`, 'error', false);
+      return;
+    }
+
+    const displayName = groupData.display_name || groupData.group_id;
+    const procedureCount = groupData.procedures.length;
+
+    // Confirm deletion
+    const confirmMsg = `Delete all ${procedureCount} procedures in group '${displayName}'?\n\n` +
+      `Procedures:\n${groupData.procedures.map(p => `  - ${p}`).join('\n')}\n\n` +
+      `All procedures will be moved to trash.`;
+
+    if (!confirm(confirmMsg)) {
+      return;
+    }
+
+    // Delete procedures one by one
+    let successCount = 0;
+    let failCount = 0;
+    const errors = [];
+
+    showNotification(`Deleting ${procedureCount} procedures...`, 'loading', false);
+
+    for (let i = 0; i < groupData.procedures.length; i++) {
+      const procedureName = groupData.procedures[i];
+
+      try {
+        setStatus(`Deleting procedure ${i + 1}/${procedureCount}: ${procedureName}`, 'info');
+
+        const res = await fetch(`${API_BASE}/api/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: `delete procedure \`${procedureName}\``
+          })
+        });
+
+        const data = await res.json();
+
+        if (data.ok) {
+          successCount++;
+        } else {
+          failCount++;
+          const errorMsg = data.result?.answer || data.message || 'Unknown error';
+          errors.push(`${procedureName}: ${errorMsg}`);
+        }
+      } catch (e) {
+        failCount++;
+        errors.push(`${procedureName}: ${e.message}`);
+      }
+    }
+
+    // Show summary
+    if (failCount === 0) {
+      showNotification(`Successfully deleted all ${successCount} procedures`, 'success', true);
+      setStatus('All procedures deleted', 'success');
+    } else {
+      const summaryMsg = `Deleted ${successCount} procedures, ${failCount} failed.\n\nErrors:\n${errors.join('\n')}`;
+      showNotification(summaryMsg, 'error', false);
+      setStatus(`Deleted ${successCount}/${procedureCount} procedures`, 'error');
+      console.error('Deletion errors:', errors);
+    }
+
+    // Reload clusters and trash
+    await loadClusterList();
+    await loadTrash();
+
+    // Refresh current view
+    if (currentClusterId) {
+      await showCluster(currentClusterId);
+    } else {
+      await showClusterSummary();
+    }
+
+  } catch (e) {
+    console.error('Failed to delete group:', e);
+    showNotification('Failed to delete group: ' + e.message, 'error', false);
+    setStatus('Failed to delete group', 'error');
   }
 };
 

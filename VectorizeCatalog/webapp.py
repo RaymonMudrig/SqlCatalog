@@ -237,8 +237,10 @@ def unified_command(body: UnifiedCommand):
     )
 
     # Update session memory if qcat entities were returned
-    if "entities" in result and body.session_id:
-        session_id = body.session_id
+    if "entities" in result:
+        # Create or reuse session_id
+        session_id = body.session_id or str(uuid.uuid4())
+
         if session_id not in SESSION_MEMORY:
             SESSION_MEMORY[session_id] = {
                 "tables": set(), "procedures": set(),

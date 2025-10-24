@@ -62,11 +62,25 @@ async function loadClusterList() {
     clusterData = await res.json();
 
     clusterList.innerHTML = '';
-    clusterData.clusters.forEach(cluster => {
+
+    // Sort clusters: non-empty first, then empty ones
+    const sortedClusters = [...clusterData.clusters].sort((a, b) => {
+      const aEmpty = (a.procedure_count === 0) ? 1 : 0;
+      const bEmpty = (b.procedure_count === 0) ? 1 : 0;
+      return aEmpty - bEmpty;
+    });
+
+    sortedClusters.forEach(cluster => {
       const li = document.createElement('li');
       const name = cluster.display_name || cluster.cluster_id;
       li.textContent = `${name} (${cluster.cluster_id})`;
       li.dataset.clusterId = cluster.cluster_id;
+
+      // Add empty-cluster class if procedure_count is 0
+      if (cluster.procedure_count === 0) {
+        li.classList.add('empty-cluster');
+      }
+
       li.addEventListener('click', () => showCluster(cluster.cluster_id));
       clusterList.appendChild(li);
     });

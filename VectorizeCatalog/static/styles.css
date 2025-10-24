@@ -305,6 +305,26 @@ main {
   font-weight: 500;
 }
 
+#cluster-list li.empty-cluster {
+  color: var(--text-muted);
+  background: #f3f4f6;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+#cluster-list li.empty-cluster:hover {
+  background: #e5e7eb;
+  opacity: 0.85;
+}
+
+#cluster-list li.empty-cluster.active {
+  background: #e0e7ff;
+  border-color: #93c5fd;
+  color: #60a5fa;
+  font-weight: 500;
+  opacity: 1;
+}
+
 /* Cluster Controls */
 #cluster-controls {
   border-top: 1px solid var(--border);
@@ -724,5 +744,54 @@ main {
 
 .danger-btn:hover {
   background: #b91c1c;
+}
+
+/* ============================================================================
+   CLICKABLE ENTITIES & MISSING TABLES
+   ============================================================================ */
+
+.missing-table {
+  color: #9E9E9E;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+  cursor: default;
+}
+
+/* ============================================================================
+   BREADCRUMB NAVIGATION
+   ============================================================================ */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+}
+
+.breadcrumb a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color 0.2s;
+  font-weight: 500;
+}
+
+.breadcrumb a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.breadcrumb-separator {
+  color: var(--text-muted);
+  font-weight: 300;
+}
+
+.breadcrumb-current {
+  color: var(--text);
+  font-weight: 600;
 }
 

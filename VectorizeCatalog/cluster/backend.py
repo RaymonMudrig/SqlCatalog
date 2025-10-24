@@ -1063,6 +1063,11 @@ class ClusterState:
             cluster = self.clusters.get(cluster_id)
             if not cluster:
                 continue
+
+            # Skip empty clusters in diagram (but they remain in cluster list)
+            if cluster.procedure_count == 0:
+                continue
+
             display = cluster.display_name or cluster.cluster_id
             # Count only non-singleton groups (singletons are just standalone procedures)
             non_singleton_count = sum(
