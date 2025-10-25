@@ -1183,9 +1183,10 @@ class ClusterState:
             safe_label = "\\n".join(label_lines)
             # Add tooltip attribute to ensure Graphviz generates <title> element in SVG
             # Use cluster:: prefix for consistent entity type detection
+            # Note: Removed URL attribute to avoid double-click issues (JavaScript handles navigation)
             lines.append(
                 f'  "{cluster.cluster_id}" [shape=box,style="rounded,filled",fillcolor="#E1BEE7",'
-                f'id="cluster::{cluster.cluster_id}",URL="cluster://{cluster.cluster_id}",tooltip="{cluster.cluster_id}",label="{safe_label}"];'
+                f'id="cluster::{cluster.cluster_id}",tooltip="{cluster.cluster_id}",label="{safe_label}"];'
             )
 
         # Add missing tables that are not global (non-global missing tables)
@@ -1209,7 +1210,7 @@ class ClusterState:
                 label = self._escape_label(table)
                 orphaned_label = self._escape_label(f"{table}\n(orphaned)")
                 lines.append(
-                    f'  "{table}" [shape=box,style="filled,dashed",fillcolor="#FF9800",penwidth=1,'
+                    f'  "{table}" [shape=box,style="filled",fillcolor="#FF9800",penwidth=1,'
                     f'id="tableO::{table}",label="{orphaned_label}"];'
                 )
 

@@ -104,7 +104,9 @@ function selectEntity(entityId, entityElement) {
   highlightConnectedEdges(entityId);
 
   // Show entity actions (async to fetch group data if needed)
-  showEntityActions(selectedEntity);
+  showEntityActions(selectedEntity).catch(err => {
+    console.error('[selectEntity] showEntityActions failed:', err);
+  });
 }
 
 function deselectEntity() {
@@ -259,9 +261,6 @@ function detectEntityType(entityId) {
 }
 
 async function showEntityActions(entity) {
-  const panel = document.getElementById('entity-action-panel');
-  if (!panel) return;
-
   const cleanId = entity.id.replace(/^(table::|tableX::|tableO::|proc::|cluster::|pg::)/, '');
 
   // For groups, check if it's a singleton (represents a single procedure)
@@ -332,20 +331,117 @@ async function showEntityActions(entity) {
     `;
   }
 
-  panel.innerHTML = `
-    <div class="entity-action-panel">
-      <h4>Selected: ${displayType}</h4>
-      <div class="entity-name">${cleanId}</div>
-      <div class="action-buttons">
-        ${actions}
-      </div>
+  // Create or get floating panel
+  let floatingPanel = document.getElementById('entity-action-panel-floating');
+  if (!floatingPanel) {
+    floatingPanel = document.createElement('div');
+    floatingPanel.id = 'entity-action-panel-floating';
+    floatingPanel.className = 'entity-action-panel-floating';
+    const diagramContainer = document.querySelector('.diagram-container');
+    if (diagramContainer) {
+      diagramContainer.appendChild(floatingPanel);
+    }
+  }
+
+  floatingPanel.innerHTML = `
+    <h4 class="drag-handle">
+      <span>Selected: ${displayType}</span>
+      <button class="close-btn" onclick="deselectEntity()" title="Close">&times;</button>
+    </h4>
+    <div class="entity-name">${cleanId}</div>
+    <div class="action-buttons">
+      ${actions}
     </div>
   `;
 
-  panel.style.display = 'block';
+  floatingPanel.style.display = 'block';
+
+  // Always reattach drag functionality after innerHTML update
+  // (innerHTML destroys the drag-handle element and its listeners)
+  makePanelDraggable(floatingPanel);
+}
+
+function makePanelDraggable(panel) {
+  // Remove any existing drag handlers to prevent duplicates
+  if (panel._dragHandlers) {
+    const dragHandle = panel.querySelector('.drag-handle');
+    if (dragHandle && panel._dragHandlers.dragStart) {
+      dragHandle.removeEventListener('mousedown', panel._dragHandlers.dragStart);
+    }
+    if (panel._dragHandlers.drag) {
+      document.removeEventListener('mousemove', panel._dragHandlers.drag);
+    }
+    if (panel._dragHandlers.dragEnd) {
+      document.removeEventListener('mouseup', panel._dragHandlers.dragEnd);
+    }
+  }
+
+  let isDragging = false;
+  let currentX;
+  let currentY;
+  let initialX;
+  let initialY;
+
+  const dragHandle = panel.querySelector('.drag-handle');
+  if (!dragHandle) return;
+
+  function dragStart(e) {
+    // Don't drag if clicking on the close button
+    if (e.target.closest('.close-btn')) {
+      return;
+    }
+
+    // Get current position from style or compute from viewport position
+    const rect = panel.getBoundingClientRect();
+    initialX = e.clientX - rect.left;
+    initialY = e.clientY - rect.top;
+
+    isDragging = true;
+    panel.classList.add('dragging');
+  }
+
+  function drag(e) {
+    if (!isDragging) return;
+
+    e.preventDefault();
+
+    currentX = e.clientX - initialX;
+    currentY = e.clientY - initialY;
+
+    // Keep panel within viewport bounds
+    const rect = panel.getBoundingClientRect();
+    const maxX = window.innerWidth - rect.width;
+    const maxY = window.innerHeight - rect.height;
+
+    currentX = Math.max(0, Math.min(currentX, maxX));
+    currentY = Math.max(0, Math.min(currentY, maxY));
+
+    panel.style.left = `${currentX}px`;
+    panel.style.top = `${currentY}px`;
+    panel.style.right = 'auto'; // Remove right positioning when dragging
+  }
+
+  function dragEnd() {
+    isDragging = false;
+    panel.classList.remove('dragging');
+  }
+
+  // Store handlers for cleanup on next call
+  panel._dragHandlers = { dragStart, drag, dragEnd };
+
+  // Attach event listeners
+  dragHandle.addEventListener('mousedown', dragStart);
+  document.addEventListener('mousemove', drag);
+  document.addEventListener('mouseup', dragEnd);
 }
 
 function hideEntityActions() {
+  const floatingPanel = document.getElementById('entity-action-panel-floating');
+  if (floatingPanel) {
+    floatingPanel.style.display = 'none';
+  }
+
+  // Also hide left panel (legacy, kept for trash items)
   const panel = document.getElementById('entity-action-panel');
   if (panel) {
     panel.style.display = 'none';

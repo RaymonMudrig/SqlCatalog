@@ -166,12 +166,12 @@ def _lmstudio_classify(prompt: str) -> Dict[str, Any] | None:
             "max_tokens": 256,
             "stream": False,
         }
-        print(f"[webapp.llm_intent] Calling LM Studio at {_LM_URL}")
+        # print(f"[webapp.llm_intent] Calling LM Studio at {_LM_URL}")
         r = requests.post(_LM_URL, json=payload, timeout=_LM_TIMEOUT)
         r.raise_for_status()
         data = r.json()
         txt = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        print(f"[webapp.llm_intent] LLM response: {txt[:200]}")
+        # print(f"[webapp.llm_intent] LLM response: {txt[:200]}")
         obj = _safe_json_loads(txt)
         if not isinstance(obj, dict):
             print(f"[webapp.llm_intent] Failed to parse JSON from LLM response")
@@ -182,7 +182,7 @@ def _lmstudio_classify(prompt: str) -> Dict[str, Any] | None:
             print(f"[webapp.llm_intent] Intent '{intent}' not in allowed intents")
             return None
         obj["source"] = "llm"
-        print(f"[webapp.llm_intent] Successfully classified: {obj}")
+        # print(f"[webapp.llm_intent] Successfully classified: {obj}")
         return obj
     except Exception as e:
         print(f"[webapp.llm_intent] LLM classification failed: {e}")

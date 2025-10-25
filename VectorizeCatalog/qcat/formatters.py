@@ -151,7 +151,7 @@ def render_unused_columns_of_table(items: List[Dict[str, Any]], table_name: str)
 
 def render_sql_of_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> str:
 
-    print(f"[formatters] render_sql_of_entity called with kind={kind}, name={name}")
+    # print(f"[formatters] render_sql_of_entity called with kind={kind}, name={name}")
 
     it_sql, src, disp = K.get_sql(items, kind, name)
     if not it_sql:
@@ -164,7 +164,7 @@ def render_compare_sql(items: List[Dict[str, Any]],
                        left_kind: Optional[str], left_name: str,
                        right_kind: Optional[str], right_name: str) -> Dict[str, str]:
 
-    print(f"[formatters] render_compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
+    # print(f"[formatters] render_compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
 
     return K.compare_sql(items, left_kind, left_name, right_kind, right_name)
 
@@ -183,7 +183,7 @@ def render_find_similar_sql(items: List[Dict[str, Any]],
     Returns:
         Formatted markdown string with results
     """
-    print(f"[formatters] render_find_similar_sql called with kind={kind}, name={name}, threshold={threshold}")
+    # print(f"[formatters] render_find_similar_sql called with kind={kind}, name={name}, threshold={threshold}")
 
     results = K.find_similar_sql(items, kind, name, threshold)
 

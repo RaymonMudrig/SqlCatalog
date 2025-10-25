@@ -51,7 +51,7 @@ def agent_answer(
     else:
         L = classify_intent(query)
 
-    print(f"[webapp.agent] Classified intent: {L}")
+    # print(f"[webapp.agent] Classified intent: {L}")
 
     # If user accepted proposal, force execution
     if accept_proposal and L.get("intent") != "semantic":

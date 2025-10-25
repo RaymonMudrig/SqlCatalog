@@ -74,7 +74,109 @@
   fill: var(--accent) !important;
 }
 
-/* Entity action panel in left sidebar */
+/* Floating entity action panel - draggable */
+.entity-action-panel-floating {
+  position: fixed;
+  top: 6rem;
+  right: 1rem;
+  z-index: 1000;
+  min-width: 250px;
+  max-width: 350px;
+  padding: 1rem;
+  background: white;
+  border: 2px solid #3b82f6;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  user-select: none;
+}
+
+.entity-action-panel-floating h4 {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: move;
+  padding: 0.25rem;
+  margin: -0.25rem -0.25rem 0.5rem -0.25rem;
+  border-radius: 4px;
+}
+
+.entity-action-panel-floating h4:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.entity-action-panel-floating.dragging {
+  opacity: 0.8;
+  cursor: move;
+}
+
+.entity-action-panel-floating .close-btn {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.2s, color 0.2s;
+}
+
+.entity-action-panel-floating .close-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.entity-action-panel-floating .entity-name {
+  font-size: 0.8125rem;
+  color: var(--accent);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  background: #eff6ff;
+  border-radius: 4px;
+  word-break: break-word;
+}
+
+.entity-action-panel-floating .action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.entity-action-panel-floating button {
+  padding: 0.5rem;
+  font-size: 0.8125rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.entity-action-panel-floating button:hover {
+  background: var(--accent-hover);
+}
+
+.entity-action-panel-floating button.secondary {
+  background: white;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.entity-action-panel-floating button.secondary:hover {
+  background: var(--bg);
+}
+
+/* Legacy entity action panel in left sidebar (kept for trash items) */
 .entity-action-panel {
   margin-top: 1rem;
   padding: 1rem;
