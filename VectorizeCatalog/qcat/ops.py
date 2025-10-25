@@ -231,8 +231,6 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
     wl_base   = (want_base or "").lower()
     k_l = (kind or "").lower()
 
-    print(f"[ops] _find_item called with kind={kind}, name={name}, fuzzy={fuzzy}, want_schema={want_schema}, want_base={want_base}")
-
     for it in items:
         if (it.get("kind") or "").lower() != k_l:
             continue
@@ -241,10 +239,7 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             continue
         for nm in cands:
             if (nm or "").lower() == wl_base:
-                print(f"[ops] _find_item exact match found: {nm}")
                 return it
-
-    print(f"[ops] _find_item exact match failed, trying wl_schema={wl_schema}, fuzzy={fuzzy}")
 
     if wl_schema:
         safe = _safe(want_schema, want_base).lower()
@@ -255,8 +250,6 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             if isinstance(sname, str) and sname.lower() == safe:
                 return it
             
-    print(f"[ops] _find_item schema-restricted match failed, trying fuzzy={fuzzy}")
-
     if not wl_schema:
         for it in items:
             if (it.get("kind") or "").lower() != k_l:
@@ -266,8 +259,6 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
                 if (nm or "").lower() == wl_base:
                     return it
 
-    print(f"[ops] _find_item no exact match found, fuzzy={fuzzy}")
-
     if fuzzy:
         for it in items:
             if (it.get("kind") or "").lower() != k_l:
@@ -276,8 +267,6 @@ def _find_item(items: List[Dict[str, Any]], kind: str, name: str, fuzzy: bool = 
             if any(wl_base in (nm or "").lower() for nm in cands):
                 return it
             
-    print(f"[ops] _find_item no match found")
-
     return None
 
 def find_item(
@@ -446,12 +435,7 @@ def _normalize_ref_name(s: str) -> str:
 
 def list_all_of_kind(items: List[Dict[str, Any]], kind: str) -> List[str]:
 
-    print(f"[ops] list_all_of_kind called with kind={kind} items={items}")
-
     items = as_items_list(items)
-
-    print(f"[ops] list_all_of_kind found {len(items)} total items")
-    print(f"[ops] sample item: {items[0] if items else 'N/A'}")
 
     res = []
     k = (kind or "").lower()
@@ -470,11 +454,9 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
     by_safe = _build_by_safe(items)
     refs = _ci_get(t, "Referenced_By") or []
     results: List[Dict[str, Any]] = []
-    print(f"[ops] procs_access_table found {len(refs)} references in Referenced_By")
     seen: Set[str] = set()
 
     def _compose_safe(entry: Any) -> Optional[str]:
-        print(f"[ops] _compose_safe called with entry={entry}")
         if not isinstance(entry, dict):
             return None
         sname = entry.get("Safe_Name")
@@ -505,7 +487,6 @@ def procs_access_table(items: List[Dict[str, Any]], table_name: str, fuzzy=False
         if not s or s in seen:
             continue
         it = by_safe.get(s)
-        print(f"[ops] procs_access_table checking safe_name={s}, found item={it}")
         if it and (it.get("kind") or "").lower() == "procedure":
             seen.add(s)
             results.append(it)
@@ -840,20 +821,6 @@ def normalize_sql(sql: str) -> str:
     s = "\n".join([ln for ln in s.split("\n") if ln.strip() != "" or ln == "\n"])
     return s.strip("\n")
 
-# def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> Optional[Dict[str, Any]]:
-
-#     print(f"[ops] _get_entity called with kind={kind} name={name}")
-
-#     items = as_items_list(items)
-#     if kind:
-#         it = _find_item(items, kind, name, fuzzy=False)
-#         if it: return it
-#     for k in ("table","view","procedure","function"):
-#         if kind and k.lower()!=kind.lower(): continue
-#         it = _find_item(items, k, name, fuzzy=False)
-#         if it: return it
-#     return None
-
 def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> Optional[Dict[str, Any]]:
     """
     Resolve an entity by name. If kind is one of {table, view, procedure, function},
@@ -863,8 +830,6 @@ def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> 
     kind_l = (kind or "").lower()
     valid = {"table", "view", "procedure", "function"}
     wildcard = (kind_l == "" or kind_l is None or kind_l not in valid or kind_l in {"any", "entity"})
-
-    print(f"[ops] _get_entity called with kind={kind} name={name}")
 
     # 1) If kind is valid, try exact in that kind first
     if not wildcard:
@@ -893,7 +858,6 @@ def _get_entity(items: List[Dict[str, Any]], kind: Optional[str], name: str) -> 
     return None
 
 def get_sql(items: List[Dict[str, Any]], kind: Optional[str], name: str):
-    print(f"[ops] get_sql called with kind={kind} name={name}")
     it = _get_entity(items, kind, name)
     if not it: return None, None, None
     sql, src = read_sql_from_item(it)
@@ -990,9 +954,6 @@ def similarity_sql(items: List[Dict[str, Any]],
 def compare_sql(items: List[Dict[str, Any]],
                 left_kind: Optional[str], left_name: str,
                 right_kind: Optional[str], right_name: str) -> Dict[str, Any]:
-    
-    print(f"[ops] compare_sql called with left=({left_kind}, {left_name}) right=({right_kind}, {right_name})")
-
     """
     Compare two entities' CREATE SQL.
     Uses get_sql() so it works whether SQL is on disk exports or in the index.
@@ -1004,8 +965,6 @@ def compare_sql(items: List[Dict[str, Any]],
     l_it = _get_entity(items, left_kind, left_name)
     r_it = _get_entity(items, right_kind, right_name)
 
-    print(f"[ops] compare_sql found left_it: {l_it is not None}, right_it: {r_it is not None}")
-
     if not l_it or not r_it:
         missing = []
         if not l_it: missing.append(f"`{left_name}`")
@@ -1015,9 +974,6 @@ def compare_sql(items: List[Dict[str, Any]],
     # Fetch SQL via helper (returns sql, source, display)
     l_sql, _, l_disp = get_sql(items, left_kind, left_name)
     r_sql, _, r_disp = get_sql(items, right_kind, right_name)
-
-    print(f"[ops] compare_sql left : \n{l_sql}")
-    print(f"[ops] compare_sql right: \n{r_sql}")
 
     # If both missing, bail out early
     if not l_sql and not r_sql:
@@ -1069,8 +1025,6 @@ def compare_sql(items: List[Dict[str, Any]],
     # 2) HTML <pre> fallback (ensures browsers show it with real newlines even if MD not parsed)
     # md.append(_html_pre(udiff))
 
-    print(f"[ops] compare_sql udiff : {udiff}")
-
     return {"answer": "\n\n".join(md), "unified_diff": udiff}
 
 def find_similar_sql(items: List[Dict[str, Any]],
@@ -1088,21 +1042,18 @@ def find_similar_sql(items: List[Dict[str, Any]],
     Returns:
         List of (entity_name, similarity_score) tuples, sorted by similarity descending
     """
-    print(f"[ops] find_similar_sql called with kind={kind}, name={name}, threshold={threshold}")
 
     items = as_items_list(items)
 
     # Resolve the source entity
     source_it = _get_entity(items, kind, name)
     if not source_it:
-        print(f"[ops] find_similar_sql: source entity not found")
         return []
 
     source_kind = (source_it.get("kind") or "").lower()
     source_sql, _, source_disp = get_sql(items, kind, name)
 
     if not source_sql:
-        print(f"[ops] find_similar_sql: no SQL found for source entity")
         return []
 
     # Format SQL for comparison
@@ -1110,8 +1061,6 @@ def find_similar_sql(items: List[Dict[str, Any]],
 
     # Find all entities of the same kind
     candidates = [it for it in items if (it.get("kind") or "").lower() == source_kind]
-
-    print(f"[ops] find_similar_sql: found {len(candidates)} candidates of kind {source_kind}")
 
     # Compare each candidate with the source
     results = []
@@ -1139,8 +1088,6 @@ def find_similar_sql(items: List[Dict[str, Any]],
 
     # Sort by similarity descending
     results.sort(key=lambda x: x[1], reverse=True)
-
-    print(f"[ops] find_similar_sql: found {len(results)} entities above threshold {threshold}%")
 
     return results
 

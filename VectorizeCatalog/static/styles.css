@@ -240,6 +240,8 @@ main {
   list-style: none;
   padding: 0.5rem;
   margin: 0;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 .entity-list li {

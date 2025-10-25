@@ -334,7 +334,7 @@ async function restoreProcedure(procedureName) {
 
     const data = await res.json();
 
-    if (data.ok) {
+    if (data.status === 'ok') {
       showNotification(data.message || 'Procedure restored successfully', 'success', true);
       setStatus(data.message || 'Procedure restored', 'success');
 

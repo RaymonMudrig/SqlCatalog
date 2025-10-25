@@ -46,9 +46,88 @@ def is_likely_alias(safe_name: str) -> bool:
     return False
 
 
-def gather_procedure_groups(catalog: Dict) -> Tuple[List[Dict], Counter, Dict[str, str], Set[str], Set[str]]:
+def is_system_table(safe_name: str, exclude_system_tables: bool = True) -> bool:
+    """Check if a table is a SQL Server system table/view.
+
+    System tables/views include:
+    - sys.* (modern catalog views like sys.objects, sys.tables)
+    - sysobjects, syscolumns, etc. (legacy system tables)
+    - INFORMATION_SCHEMA.* (ANSI standard views)
+    - MSreplication_* (replication tables)
+    - dtproperties (legacy extended properties)
+
+    Args:
+        safe_name: Table name (may be schema-qualified like "sys.objects" or "dbo·sysobjects")
+        exclude_system_tables: If False, always returns False (no filtering)
+
+    Returns:
+        True if table should be excluded from clustering, False otherwise
+    """
+    if not exclude_system_tables:
+        return False
+
+    if not safe_name:
+        return False
+
+    # Normalize: handle both · and . as separators
+    normalized = safe_name.lower().replace('·', '.')
+
+    # Pattern 1: sys.* (modern catalog views)
+    if normalized.startswith('sys.'):
+        return True
+
+    # Pattern 2: INFORMATION_SCHEMA.* (ANSI standard views)
+    if normalized.startswith('information_schema.'):
+        return True
+
+    # Pattern 3: Legacy system tables (any schema)
+    legacy_system_tables = {
+        'sysobjects', 'syscolumns', 'sysindexes', 'systypes', 'sysdepends',
+        'sysreferences', 'sysusers', 'syspermissions', 'sysconstraints',
+        'sysfiles', 'sysfilegroups', 'sysforeignkeys', 'sysfulltextcatalogs',
+        'sysindexkeys', 'sysmembers', 'sysprotects', 'sysallocunits',
+        'syscacheobjects', 'syscharsets', 'sysconfigures', 'syscurconfigs',
+        'sysdatabases', 'syslanguages', 'syslockinfo', 'syslogins',
+        'sysmessages', 'sysoledbusers', 'sysperfinfo', 'sysprocesses',
+        'sysremotelogins', 'sysservers',
+    }
+
+    # Extract table name (after schema separator if present)
+    if '.' in normalized:
+        table_name = normalized.split('.')[-1]
+    else:
+        table_name = normalized
+
+    if table_name in legacy_system_tables:
+        return True
+
+    # Pattern 4: Replication tables
+    if table_name.startswith('msreplication_'):
+        return True
+
+    # Pattern 5: Legacy extended properties table
+    if table_name == 'dtproperties':
+        return True
+
+    # Pattern 6: Trace tables
+    if table_name.startswith('trace_xe_'):
+        return True
+
+    return False
+
+
+def gather_procedure_groups(
+    catalog: Dict,
+    exclude_system_tables: bool = True,
+    exclude_patterns: Optional[List[str]] = None,
+) -> Tuple[List[Dict], Counter, Dict[str, str], Set[str], Set[str]]:
     """
     Group procedures by table access patterns.
+
+    Args:
+        catalog: Catalog dictionary with Procedures, Tables, Views
+        exclude_system_tables: If True, exclude SQL Server system tables (default: True)
+        exclude_patterns: Optional list of additional patterns to exclude (e.g., ["temp_", "archive_"])
 
     Returns:
         - groups: List of procedure groups
@@ -60,6 +139,7 @@ def gather_procedure_groups(catalog: Dict) -> Tuple[List[Dict], Counter, Dict[st
     raw_groups: Dict[Tuple[str, ...], Dict[str, List[str]]] = {}
     procedures = catalog.get("Procedures", {})
     table_display_names: Dict[str, str] = {}  # normalized -> original for display
+    exclude_patterns = exclude_patterns or []
 
     # Build set of existing tables (normalized, case-insensitive)
     existing_tables: Set[str] = set()
@@ -74,27 +154,55 @@ def gather_procedure_groups(catalog: Dict) -> Tuple[List[Dict], Counter, Dict[st
         existing_tables_original[normalized] = view_name
 
     missing_tables: Set[str] = set()
+    excluded_tables_count = 0  # Track how many system tables were filtered
 
     for proc_name, proc_body in procedures.items():
         table_refs: Set[str] = set()
         for access_key in ("Reads", "Writes"):
             for item in proc_body.get(access_key, []) or []:
                 safe_name = item.get("Safe_Name")
-                if safe_name and not is_likely_alias(safe_name):
-                    # Normalize to lowercase for grouping (SQL Server is case-insensitive)
-                    normalized = safe_name.lower()
-                    table_refs.add(normalized)
-                    # Keep first occurrence of original name for display
-                    if normalized not in table_display_names:
-                        table_display_names[normalized] = safe_name
-                    # Check if table exists in catalog
-                    if normalized not in existing_tables:
-                        missing_tables.add(normalized)
+                if not safe_name:
+                    continue
+
+                # Skip aliases
+                if is_likely_alias(safe_name):
+                    continue
+
+                # Skip system tables (if enabled)
+                if is_system_table(safe_name, exclude_system_tables):
+                    excluded_tables_count += 1
+                    continue
+
+                # Skip custom exclude patterns
+                normalized_lower = safe_name.lower().replace('·', '.')
+                skip = False
+                for pattern in exclude_patterns:
+                    if pattern.lower() in normalized_lower:
+                        skip = True
+                        break
+                if skip:
+                    excluded_tables_count += 1
+                    continue
+
+                # Normalize to lowercase for grouping (SQL Server is case-insensitive)
+                normalized = safe_name.lower()
+                table_refs.add(normalized)
+                # Keep first occurrence of original name for display
+                if normalized not in table_display_names:
+                    table_display_names[normalized] = safe_name
+                # Check if table exists in catalog
+                if normalized not in existing_tables:
+                    missing_tables.add(normalized)
+
         if not table_refs:
             continue
         key = tuple(sorted(table_refs))
         entry = raw_groups.setdefault(key, {"tables": key, "procedures": []})
         entry["procedures"].append(proc_name)
+
+    # Log filtering statistics
+    if excluded_tables_count > 0:
+        print(f"[gather_procedure_groups] Excluded {excluded_tables_count} system/pattern table references")
 
     groups: List[Dict] = []
     table_usage = Counter()
@@ -214,8 +322,113 @@ def build_similarity_edges(
     return edges
 
 
+def build_clusters_two_phase(
+    groups: Sequence[Dict],
+    edges: Sequence[Tuple[int, int, float]],
+    min_assignment_similarity: float = 0.0,
+) -> List[List[int]]:
+    """Build clusters using 2-phase greedy assignment algorithm.
+
+    Phase 1: Isolated groups (zero similarity with all others) get singleton clusters
+    Phase 2: Remaining groups assigned to cluster with highest similarity
+
+    This approach avoids transitive closure problems of union-find while
+    maintaining better cluster balance.
+
+    Args:
+        groups: List of procedure groups with tables
+        edges: List of (group_idx1, group_idx2, similarity) edges
+        min_assignment_similarity: Minimum similarity to assign to cluster (default: 0.0)
+
+    Returns:
+        List of clusters, each containing group indices
+    """
+    group_count = len(groups)
+
+    # Build adjacency map from edges
+    adjacency: Dict[int, Set[int]] = defaultdict(set)
+    similarity_map: Dict[Tuple[int, int], float] = {}
+
+    for left, right, sim in edges:
+        adjacency[left].add(right)
+        adjacency[right].add(left)
+        similarity_map[(min(left, right), max(left, right))] = sim
+
+    # Phase 1: Find isolated groups (zero similarity with all others)
+    isolated_groups: List[int] = []
+    connected_groups: List[int] = []
+
+    for idx in range(group_count):
+        if idx not in adjacency or len(adjacency[idx]) == 0:
+            isolated_groups.append(idx)
+        else:
+            connected_groups.append(idx)
+
+    # Create singleton clusters for isolated groups
+    clusters: List[List[int]] = [[idx] for idx in isolated_groups]
+
+    # Phase 2: Assign connected groups to best-fit clusters
+    # Sort by table count (descending) - process complex groups first
+    connected_groups.sort(key=lambda idx: len(groups[idx]["tables"]), reverse=True)
+
+    for group_idx in connected_groups:
+        group_tables = set(groups[group_idx]["tables"])
+
+        if not clusters:
+            # No clusters yet, create first one
+            clusters.append([group_idx])
+            continue
+
+        # Calculate similarity with each existing cluster
+        best_cluster_idx = -1
+        best_similarity = -1.0
+
+        for cluster_idx, cluster_members in enumerate(clusters):
+            # Compute cluster-level similarity (Jaccard with union of all cluster tables)
+            cluster_tables: Set[str] = set()
+            for member_idx in cluster_members:
+                cluster_tables.update(groups[member_idx]["tables"])
+
+            # Jaccard similarity: intersection / union
+            intersection = len(group_tables & cluster_tables)
+            union = len(group_tables | cluster_tables)
+
+            if union > 0:
+                similarity = intersection / union
+            else:
+                similarity = 0.0
+
+            # Track best cluster (with tie-breaking by smallest cluster for balance)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_cluster_idx = cluster_idx
+            elif similarity == best_similarity and best_cluster_idx >= 0:
+                # Tie-break: prefer smaller cluster for better balance
+                if len(clusters[cluster_idx]) < len(clusters[best_cluster_idx]):
+                    best_cluster_idx = cluster_idx
+
+        # Assign to best cluster or create new one
+        # Note: best_similarity will be > 0 for connected groups (they have edges)
+        # but we still respect min_assignment_similarity threshold
+        if best_similarity > 0 and best_similarity >= min_assignment_similarity:
+            clusters[best_cluster_idx].append(group_idx)
+        else:
+            # Similarity too low (or zero), create new cluster
+            clusters.append([group_idx])
+
+    # Sort clusters by size (descending) then by smallest member (for determinism)
+    sorted_clusters = sorted(
+        clusters, key=lambda members: (-len(members), min(members))
+    )
+
+    return [sorted(members) for members in sorted_clusters]
+
+
 def build_clusters(group_count: int, edges: Sequence[Tuple[int, int, float]]) -> List[List[int]]:
     """Build clusters using union-find algorithm based on similarity edges.
+
+    DEPRECATED: This function uses union-find which creates transitive closures
+    and can result in unbalanced clusters. Use build_clusters_two_phase() instead.
 
     Args:
         group_count: Total number of procedure groups
@@ -303,15 +516,19 @@ def rebuild_clusters_from_catalog(
     parameters: Optional[Dict[str, any]] = None,
 ) -> Dict[str, any]:
     """
-    Rebuild clusters.json from catalog.json using clustering algorithm.
+    Rebuild clusters.json from catalog.json using 2-phase clustering algorithm.
 
     Args:
         catalog_path: Path to catalog.json
         output_path: Path to save clusters.json
         parameters: Optional clustering parameters:
-            - similarity_threshold: float (default: 0.5)
-            - min_group_size: int (default: 1)
-            - min_global_clusters: int (default: 2)
+            - similarity_threshold: float (default: 0.5) - for edge creation
+            - min_group_size: int (default: 1) - minimum tables in group for similarity
+            - min_global_clusters: int (default: 2) - min clusters to mark table as global
+            - min_assignment_similarity: float (default: 0.0) - min similarity to assign to cluster
+            - use_two_phase: bool (default: True) - use new 2-phase algorithm
+            - exclude_system_tables: bool (default: True) - exclude SQL Server system tables
+            - exclude_patterns: List[str] (default: []) - additional table name patterns to exclude
 
     Returns:
         Dict with clustering results and statistics
@@ -321,6 +538,10 @@ def rebuild_clusters_from_catalog(
     similarity_threshold = params.get("similarity_threshold", 0.5)
     min_group_size = params.get("min_group_size", 1)
     min_global_clusters = params.get("min_global_clusters", 2)
+    min_assignment_similarity = params.get("min_assignment_similarity", 0.0)
+    use_two_phase = params.get("use_two_phase", True)
+    exclude_system_tables = params.get("exclude_system_tables", True)
+    exclude_patterns = params.get("exclude_patterns", [])
 
     # Load catalog
     if not catalog_path.exists():
@@ -329,8 +550,12 @@ def rebuild_clusters_from_catalog(
     with catalog_path.open("r", encoding="utf-8") as handle:
         catalog = json.load(handle)
 
-    # Step 1: Group procedures by table access patterns
-    groups, table_usage, table_display_names, missing_tables, orphaned_tables = gather_procedure_groups(catalog)
+    # Step 1: Group procedures by table access patterns (with filtering)
+    groups, table_usage, table_display_names, missing_tables, orphaned_tables = gather_procedure_groups(
+        catalog,
+        exclude_system_tables=exclude_system_tables,
+        exclude_patterns=exclude_patterns,
+    )
 
     if not groups:
         raise ValueError("No procedures with table access were found in the catalog snapshot.")
@@ -343,7 +568,17 @@ def rebuild_clusters_from_catalog(
     )
 
     # Step 3: Cluster procedure groups based on similarity
-    clusters = build_clusters(len(groups), edges)
+    if use_two_phase:
+        # Use new 2-phase algorithm (avoids transitive closure)
+        clusters = build_clusters_two_phase(
+            groups=groups,
+            edges=edges,
+            min_assignment_similarity=min_assignment_similarity,
+        )
+    else:
+        # Use legacy union-find algorithm (can create unbalanced clusters)
+        clusters = build_clusters(len(groups), edges)
+
     cluster_summaries = summarize_clusters(groups, clusters)
 
     # Step 4: Identify global tables (accessed by multiple clusters)
@@ -370,6 +605,10 @@ def rebuild_clusters_from_catalog(
             "similarity_threshold": similarity_threshold,
             "min_group_size": min_group_size,
             "min_global_clusters": min_global_clusters,
+            "min_assignment_similarity": min_assignment_similarity,
+            "use_two_phase": use_two_phase,
+            "exclude_system_tables": exclude_system_tables,
+            "exclude_patterns": exclude_patterns,
         },
         "global_tables": sorted(global_tables),
         "procedure_groups": [

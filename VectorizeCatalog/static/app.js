@@ -230,6 +230,14 @@ async function executeCommand() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command, session_id: sessionId })
     });
+
+    // Check if response is JSON
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server returned non-JSON response: ${text.substring(0, 200)}`);
+    }
+
     const data = await res.json();
 
     if (data.type === 'qcat') {

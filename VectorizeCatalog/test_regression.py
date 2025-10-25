@@ -1,28 +1,40 @@
 #!/usr/bin/env python3
 """
-Regression test suite for SqlCatalog intents.
+Regression test suite for SqlCatalog unified webapp intents.
 
-This test suite validates all implemented intents are working correctly.
+This test suite validates all implemented intents are working correctly
+for both qcat (catalog queries) and cluster (cluster management) backends.
+
 Run with: python3 test_regression.py
 """
 
 import json
 import sys
-import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
-# Add qcat to path if needed
+# Add project to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from qcat.agent import agent_answer
+# Import unified webapp agent
+from webapp_lib.agent import agent_answer
+
+# Import backend services
+from qcat.items import load_items
+from qcat.backend import QcatService
+from cluster.backend import ClusterService
+from qcat.paths import OUTPUT_DIR
 
 # Test cases: (query, expected_intent, validation_func)
 # validation_func receives the answer string and returns (passed: bool, message: str)
 
 def contains_text(answer: str, *texts: str) -> Tuple[bool, str]:
     """Check if answer contains all specified texts (case-insensitive)."""
-    answer_lower = answer.lower()
+    # Handle case where answer might be a dict (e.g., compare_sql returns nested structure)
+    if isinstance(answer, dict):
+        answer = answer.get("answer", str(answer))
+
+    answer_lower = str(answer).lower()
     for text in texts:
         if text.lower() not in answer_lower:
             return False, f"Expected to find '{text}' in answer"
@@ -53,6 +65,47 @@ def contains_count(answer: str, min_count: int = 1) -> Tuple[bool, str]:
     if max(counts) >= min_count:
         return True, "OK"
     return False, f"Expected count >= {min_count}, found {max(counts)}"
+
+def validate_result_structure(result: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Validate that result has the correct structure for webapp.py serialization.
+
+    Expected structure:
+    {
+        "answer": str | dict,  # Must be JSON serializable
+        "entities": list[dict] | optional,  # If present, must be list of dicts
+        "intent": str | optional,  # For list_all_* intents (prevents memory pollution)
+        ... other optional fields like "unified_diff", "contains_sql", etc.
+    }
+    """
+    # 1. Check "answer" field exists and is serializable
+    if "answer" not in result:
+        return False, "Missing 'answer' field"
+
+    answer = result["answer"]
+    if not isinstance(answer, (str, dict)):
+        return False, f"'answer' must be str or dict, got {type(answer).__name__}"
+
+    # 2. If "entities" field exists, validate it's a list
+    if "entities" in result:
+        entities = result["entities"]
+        if not isinstance(entities, list):
+            return False, f"'entities' must be a list, got {type(entities).__name__}"
+
+        # Check each entity is a dict with required fields
+        for i, entity in enumerate(entities):
+            if not isinstance(entity, dict):
+                return False, f"entities[{i}] must be dict, got {type(entity).__name__}"
+            # Common entity fields: kind, name, safe_name (not all required)
+            # Just ensure it's a plain dict (JSON serializable)
+
+    # 3. Try JSON serialization (catches nested objects, circular refs, etc.)
+    try:
+        json.dumps(result)
+    except (TypeError, ValueError) as e:
+        return False, f"Result not JSON serializable: {e}"
+
+    return True, "Structure valid"
 
 # Test suite definitions
 TEST_CASES = [
@@ -254,25 +307,35 @@ TEST_CASES = [
 ]
 
 
-def run_tests(catalog_path: str = "../output/catalog.json") -> None:
-    """Run all regression tests."""
+def run_tests(catalog_path: str = None) -> None:
+    """
+    Run all regression tests using unified webapp agent.
 
-    # Load catalog
-    print(f"Loading catalog from {catalog_path}...")
+    Note: catalog_path parameter is kept for backward compatibility but not used.
+    The services load data from paths.py configuration (OUTPUT_DIR, etc).
+    """
+
+    # Initialize backend services
+    print("Initializing backend services...")
     try:
-        with open(catalog_path) as f:
-            catalog_raw = json.load(f)
-    except FileNotFoundError:
-        print(f"ERROR: Catalog file not found at {catalog_path}")
-        print("Please run the C# SqlCatalog tool first to generate catalog.json")
+        # Load items and embeddings for qcat
+        print("  Loading qcat items...")
+        ITEMS, EMB = load_items()
+        qcat_service = QcatService(ITEMS, EMB)
+
+        # Load cluster service
+        print("  Loading cluster service...")
+        cluster_snapshot_path = OUTPUT_DIR / "cluster" / "clusters.json"
+        cluster_service = ClusterService(cluster_snapshot_path)
+
+        print(f"  ✅ Qcat loaded: {len(ITEMS)} items")
+        print(f"  ✅ Cluster loaded: {len(cluster_service.state.clusters)} clusters")
+    except Exception as e:
+        print(f"ERROR: Failed to initialize services: {e}")
+        print("Please ensure:")
+        print("  1. ../output/vector_index/items.json exists")
+        print("  2. ../output/cluster/clusters.json exists (or can be created)")
         sys.exit(1)
-
-    # Wrap catalog in the structure expected by agent_answer
-    catalog = {"catalog": catalog_raw}
-
-    print(f"Catalog loaded: {len(catalog_raw.get('Tables', {}))} tables, "
-          f"{len(catalog_raw.get('Views', {}))} views, "
-          f"{len(catalog_raw.get('Procedures', {}))} procedures\n")
 
     # Run tests
     passed = 0
@@ -293,19 +356,39 @@ def run_tests(catalog_path: str = "../output/catalog.json") -> None:
         print(f"  Query: {query}")
 
         try:
-            # Get answer
-            result = agent_answer(query, catalog)
+            # Get answer using unified agent
+            result = agent_answer(
+                query=query,
+                qcat_service=qcat_service,
+                cluster_service=cluster_service,
+                intent_override=None,
+                accept_proposal=False
+            )
+
+            # Check if needs confirmation (low confidence)
+            if result.get("needs_confirmation"):
+                print(f"  ⚠️  NEEDS CONFIRMATION - Low confidence intent classification")
+                print(f"     Proposal: {result.get('proposal', {}).get('intent')}")
+                failed += 1
+                continue
+
+            # FIRST: Validate result structure (critical for webapp.py compatibility)
+            structure_ok, structure_msg = validate_result_structure(result)
+            if not structure_ok:
+                print(f"  ❌ FAILED - Structure validation: {structure_msg}")
+                print(f"     Result keys: {list(result.keys())}")
+                if "entities" in result:
+                    print(f"     Entities type: {type(result['entities'])}")
+                failed += 1
+                continue
+
+            # SECOND: Validate answer content (business logic)
             answer = result.get("answer", "")
-
-            # Note: agent_answer doesn't return intent directly, it's logged during execution
-            # We validate based on answer content instead
-
-            # Validate answer
             validation_ok, validation_msg = validate(answer)
 
             # Overall result
             if validation_ok:
-                print(f"  ✅ PASSED - {validation_msg}")
+                print(f"  ✅ PASSED - {validation_msg} | {structure_msg}")
                 passed += 1
             else:
                 print(f"  ❌ FAILED - {validation_msg}")
@@ -314,6 +397,8 @@ def run_tests(catalog_path: str = "../output/catalog.json") -> None:
 
         except Exception as e:
             print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             errors += 1
 
     # Summary

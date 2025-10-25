@@ -400,9 +400,12 @@ class ClusterState:
         - Procedure moved to Trash cluster as singleton group
         - Original group loses this procedure
         - If original group becomes empty → auto-deleted (virtual entity cleanup)
-        - Tables only accessed by this procedure become orphaned
+        - Tables status updated based on remaining cluster usage
         - Tables that are orphaned AND missing → auto-removed from tracking
         """
+        # Import system table checker
+        from cluster.clustering import is_system_table
+
         # Find the group containing this procedure
         group = self.find_group_by_procedure(procedure_name)
         original_group_id = group.group_id
@@ -415,31 +418,47 @@ class ClusterState:
         # Get procedure's table dependencies
         procedure_tables = list(group.tables)
 
-        # Calculate which tables will become orphaned
-        tables_to_orphan = []
+        # Determine table status for each table (self-contained within clusters.json)
+        # Skip system/master tables entirely
+        table_status = {}
+
         for table in procedure_tables:
-            # Count how many OTHER procedures/groups use this table
-            usage_count = 0
+            # Skip master/system tables
+            if is_system_table(table):
+                continue
+
+            # Count clusters still using this table AFTER this delete
+            clusters_using = set()
             for g in self.groups.values():
                 if g.cluster_id == "trash":
-                    continue  # Don't count trash procedures
+                    continue
                 if g.group_id == original_group_id:
-                    # Count other procedures in this group
+                    # Check if this group will remain after delete
                     other_procs = [p for p in g.procedures if p != procedure_name]
-                    if other_procs:
-                        usage_count += 1
-                elif table in g.tables:
-                    usage_count += 1
+                    if not other_procs:
+                        continue  # Group will be deleted
+                if table in g.tables:
+                    clusters_using.add(g.cluster_id)
 
-            if usage_count == 0:
-                tables_to_orphan.append(table)
+            # Determine current status
+            is_missing = table in self.missing_tables
+            is_global = table in self.global_tables
+            is_orphaned = table in self.orphaned_tables
 
-        # Create trash metadata
+            table_status[table] = {
+                "is_missing": is_missing,
+                "is_global": is_global,
+                "is_orphaned": is_orphaned,
+                "clusters_after_delete": list(clusters_using),
+            }
+
+        # Create trash metadata with full table status
         trash_metadata = {
             "procedure_name": procedure_name,
             "original_group_id": original_group_id,
             "original_cluster_id": original_cluster_id,
             "tables": procedure_tables,
+            "table_status": table_status,
         }
 
         # Create trash item
@@ -491,9 +510,24 @@ class ClusterState:
         self.group_order.append(trash_group_id)
         self.clusters["trash"].group_ids.append(trash_group_id)
 
-        # Mark tables as orphaned
-        for table in tables_to_orphan:
-            self.orphaned_tables.add(table)
+        # Apply table status changes based on delete algorithm
+        tables_removed_from_missing = []
+        tables_now_orphaned = []
+
+        for table, status in table_status.items():
+            num_clusters_after = len(status["clusters_after_delete"])
+
+            # Algorithm:
+            # 1. If MISSING and no other cluster uses it → remove from missing_tables
+            if status["is_missing"] and num_clusters_after == 0:
+                self.missing_tables.discard(table)
+                tables_removed_from_missing.append(table)
+
+            # 2. If GLOBAL and only 1 cluster left → becomes CORE (rebuild_indexes handles this)
+            # 3. If CORE and no clusters left → mark as orphaned
+            elif not status["is_global"] and not status["is_orphaned"] and num_clusters_after == 0:
+                self.orphaned_tables.add(table)
+                tables_now_orphaned.append(table)
 
         # Auto-remove virtual entities: tables that are BOTH missing AND orphaned
         tables_auto_removed = []
@@ -504,7 +538,7 @@ class ClusterState:
                 self.orphaned_tables.discard(table)
                 tables_auto_removed.append(table)
 
-        # Rebuild indexes
+        # Rebuild indexes (recalculates global_tables, cluster.tables, etc.)
         self.rebuild_indexes()
 
         return {
@@ -513,7 +547,8 @@ class ClusterState:
             "original_cluster": original_cluster_id,
             "empty_group_deleted": empty_group_deleted,
             "moved_to_trash_group": trash_group_id,
-            "tables_now_orphaned": tables_to_orphan,
+            "tables_now_orphaned": tables_now_orphaned,
+            "tables_removed_from_missing": tables_removed_from_missing,
             "tables_auto_removed": tables_auto_removed,
         }
 
@@ -625,19 +660,76 @@ class ClusterState:
         if target_cluster_id == "trash":
             raise ValueError("Cannot restore to Trash cluster")
 
-        # Get procedure's tables
-        procedure_tables = set(trash_group.tables)
+        # Get procedure's tables from trash metadata (trash groups have empty tables)
+        # Find the trash metadata for this procedure
+        trash_metadata = None
+        for item in self.trash:
+            if item.item_type == "procedure" and item.item_id == procedure_name:
+                trash_metadata = item.data
+                break
 
-        # Auto-reinsertion: Check for missing tables
-        tables_reinserted = []
+        if not trash_metadata:
+            raise ValueError(
+                f"Cannot restore procedure '{procedure_name}': "
+                f"Trash metadata not found. Procedure may have been permanently deleted."
+            )
+
+        # Import system table checker
+        from cluster.clustering import is_system_table
+
+        # Get table list from metadata (trash groups have empty tables list)
+        procedure_tables = set(trash_metadata.get("tables", []))
+
+        # Determine how to handle each table during restore (self-contained)
+        # Skip system/master tables entirely
+        tables_added_to_missing = []
+        tables_unorphaned = []
+        tables_promoted_to_global = []
+
         for table in procedure_tables:
-            if table not in self.missing_tables:
+            # Skip master/system tables
+            if is_system_table(table):
                 continue
 
-            # Table is missing - ensure it's tracked as missing
-            # Since it's about to be used by this procedure, it won't be orphaned anymore
-            self.missing_tables.add(table)
-            tables_reinserted.append(table)
+            # Check current status of table by examining all clusters
+            is_missing = table in self.missing_tables
+            is_orphaned = table in self.orphaned_tables
+            is_global = table in self.global_tables
+
+            # Find which clusters currently use this table (excluding trash and target)
+            other_clusters_using = set()
+            for g in self.groups.values():
+                if g.cluster_id == "trash" or g.cluster_id == target_cluster_id:
+                    continue
+                if table in g.tables:
+                    other_clusters_using.add(g.cluster_id)
+
+            # Algorithm for RESTORE:
+            # 1. If MISSING → add to target cluster, keep in missing_tables
+            if is_missing:
+                # Already in missing_tables, just add to cluster (handled below)
+                pass
+
+            # 2. If ORPHANED → remove from orphaned_tables, add as CORE to target cluster
+            elif is_orphaned:
+                self.orphaned_tables.discard(table)
+                tables_unorphaned.append(table)
+
+            # 3. If GLOBAL → add to target cluster as GLOBAL (no status change)
+            elif is_global:
+                # Already global, just add to cluster (handled below)
+                pass
+
+            # 4. If CORE in another cluster → promote to GLOBAL
+            elif len(other_clusters_using) > 0:
+                # Will become global (target + other clusters = 2+)
+                # rebuild_indexes() will recalculate global_tables
+                tables_promoted_to_global.append(table)
+
+            # 5. If doesn't exist anywhere → new MISSING table
+            elif len(other_clusters_using) == 0 and not is_missing and not is_orphaned and not is_global:
+                self.missing_tables.add(table)
+                tables_added_to_missing.append(table)
 
         # Auto-grouping: Find group with EXACT same table set (100% similarity)
         exact_match_group = None
@@ -666,6 +758,12 @@ class ClusterState:
             # Add procedure to group
             target_group.procedures.append(procedure_name)
             target_group.is_singleton = False  # Now has multiple procedures
+
+            # Clear auto-generated display_name (if it was a singleton with procedure name as display_name)
+            # This ensures the group shows all procedures in diagrams (not just one proc name)
+            # Only clear if display_name matches one of the procedures (auto-generated)
+            if target_group.display_name in target_group.procedures:
+                target_group.display_name = None
 
             # Tables are already identical, no need to merge
 
@@ -716,14 +814,13 @@ class ClusterState:
             target_group_id = new_group_id
             similarity = 0.0
 
-        # Un-orphan tables that are now used
-        tables_unorphaned = []
-        for table in procedure_tables:
-            if table in self.orphaned_tables:
-                self.orphaned_tables.discard(table)
-                tables_unorphaned.append(table)
+        # Remove procedure from trash metadata list
+        self.trash = [
+            item for item in self.trash
+            if not (item.item_type == "procedure" and item.item_id == procedure_name)
+        ]
 
-        # Rebuild indexes
+        # Rebuild indexes (recalculates global_tables, cluster.tables, etc.)
         self.rebuild_indexes()
 
         return {
@@ -733,8 +830,9 @@ class ClusterState:
             "action": action,
             "similarity": similarity,
             "exact_match": action == "joined_existing_group",
-            "tables_reinserted": tables_reinserted,
+            "tables_added_to_missing": tables_added_to_missing,
             "tables_unorphaned": tables_unorphaned,
+            "tables_promoted_to_global": tables_promoted_to_global,
         }
 
     def restore_table(self, trash_index: int) -> Dict[str, Any]:

@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 try:
     from .paths import (
         CATALOG_JSON,
-        ITEMS_JSON,
         SQL_EXPORTS_TABLES,
         SQL_EXPORTS_VIEWS,
         SQL_EXPORTS_PROCEDURES,
@@ -18,7 +17,6 @@ try:
 except ImportError:
     from paths import (
         CATALOG_JSON,
-        ITEMS_JSON,
         SQL_EXPORTS_TABLES,
         SQL_EXPORTS_VIEWS,
         SQL_EXPORTS_PROCEDURES,
@@ -145,19 +143,9 @@ def load_catalog(path: Optional[str] = None) -> Dict[str, Any]:
 @lru_cache(None)
 def load_items() -> List[Dict[str, Any]]:
     """
-    Prefer items.json for semantic search if present.
-    Otherwise, synthesize items from catalog.json (deterministic ops use this anyway).
+    Build items list from catalog.json.
+
+    Simplified: Always builds from catalog.json (no pre-built items.json needed).
     """
-    if ITEMS_JSON.exists():
-        try:
-            return _read_json(ITEMS_JSON)
-        except Exception:
-            pass
     cat = load_catalog()
     return _catalog_to_items(cat)
-
-@lru_cache(None)
-def load_emb():
-    # optional; keep existing behavior if you had an embeddings file elsewhere.
-    # Returning None allows code paths that don't need embeddings to proceed.
-    return None

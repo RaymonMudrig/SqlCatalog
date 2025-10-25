@@ -5,76 +5,19 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-# Import your existing paths (names preserved)
+# Import paths
 try:
-    from .paths import (
-        OUTPUT_DIR,
-        CATALOG_JSON,
-        ITEMS_JSON,
-        ITEMS_PATH,
-        EMB_PATH,
-    )
+    from .paths import CATALOG_JSON
 except ImportError:
-    from paths import (
-        OUTPUT_DIR,
-        CATALOG_JSON,
-        ITEMS_JSON,
-        ITEMS_PATH,
-        EMB_PATH,
-    )
+    from paths import CATALOG_JSON
 
 def _read_json(p: Path) -> Optional[dict]:
+    """Read JSON file, return None on error."""
     try:
         if p and p.exists():
             return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
-    return None
-
-def _maybe_load_numpy(path: Path):
-    """Try to load .npy embeddings if numpy is available."""
-    try:
-        import numpy as np  # optional
-        return np.load(str(path), allow_pickle=True)
-    except Exception:
-        return None
-
-def _load_embeddings(items_path_used: Optional[Path]) -> Optional[Any]:
-    """
-    Try several embedding locations:
-      1) EMB_PATH (global: output/vector_index/embeddings.npy)
-      2) items_path_used.with_suffix('.emb.json')
-      3) items_path_used.parent / 'embeddings.npy'
-    Accept either .npy or .json formats.
-    """
-    # 1) global EMB_PATH
-    if EMB_PATH and EMB_PATH.exists():
-        if EMB_PATH.suffix.lower() == ".npy":
-            emb = _maybe_load_numpy(EMB_PATH)
-            if emb is not None:
-                return emb
-        else:
-            emb = _read_json(EMB_PATH)
-            if emb is not None:
-                return emb
-
-    if not items_path_used:
-        return None
-
-    # 2) colocated .emb.json
-    emb_json = items_path_used.with_suffix(".emb.json")
-    if emb_json.exists():
-        emb = _read_json(emb_json)
-        if emb is not None:
-            return emb
-
-    # 3) colocated embeddings.npy
-    emb_npy = items_path_used.parent / "embeddings.npy"
-    if emb_npy.exists():
-        emb = _maybe_load_numpy(emb_npy)
-        if emb is not None:
-            return emb
-
     return None
 
 def _build_indices_from_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,39 +55,17 @@ def _build_indices_from_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
 
 def load_items() -> Tuple[Dict[str, Any], Optional[Any]]:
     """
-    Load 'items' (and optional embeddings) used by the backend.
+    Load items from catalog.json.
 
-    Priority for items.json:
-      1) ITEMS_JSON (VectorizeCatalog/items.json)
-      2) ITEMS_PATH (output/vector_index/items.json)
-      3) OUTPUT_DIR/items.json
-
-    Fallback:
-      - Build minimal items from CATALOG_JSON (output/catalog.json)
+    Simplified: Always builds from catalog.json (no pre-built items.json needed).
+    Returns: (items dict, None) - embeddings always None (not used in current flow)
     """
-    candidates = [
-        Path(ITEMS_JSON),
-        Path(ITEMS_PATH),
-        OUTPUT_DIR / "items.json",
-    ]
-
-    # Try to load items.json from candidates
-    for cand in candidates:
-        items = _read_json(cand)
-        if isinstance(items, dict):
-            # Enrich with catalog if missing
-            if "catalog" not in items:
-                cat = _read_json(Path(CATALOG_JSON))
-                if cat:
-                    items["catalog"] = cat
-
-            # Load embeddings (optional)
-            emb = _load_embeddings(cand)
-            return items, emb
-
-    # No items.json anywhere -> fallback to catalog-only mode
     catalog = _read_json(Path(CATALOG_JSON)) or {}
+    if not catalog:
+        raise FileNotFoundError(f"catalog.json not found or empty at {CATALOG_JSON}")
+
     items: Dict[str, Any] = {"catalog": catalog}
     items.update(_build_indices_from_catalog(catalog))
-    emb = None
-    return items, emb
+
+    # Embeddings not used in current query flow (always return None)
+    return items, None

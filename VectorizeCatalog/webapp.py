@@ -228,15 +228,34 @@ def unified_command(body: UnifiedCommand):
     This ensures "which procedures access X" goes to qcat, not cluster!
     """
     # Call unified webapp agent (single LLM call with ALL intents)
-    result = webapp_agent_answer(
-        query=body.command,
-        qcat_service=QCAT_SERVICE,
-        cluster_service=CLUSTER_SERVICE,
-        intent_override=None,
-        accept_proposal=False,
-    )
+    try:
+        result = webapp_agent_answer(
+            query=body.command,
+            qcat_service=QCAT_SERVICE,
+            cluster_service=CLUSTER_SERVICE,
+            intent_override=None,
+            accept_proposal=False,
+        )
+    except Exception as e:
+        # Catch any unhandled exceptions and return JSON error
+        import traceback
+        error_detail = str(e)
+        print(f"[webapp] Error in unified_command: {error_detail}")
+        traceback.print_exc()
+
+        return {
+            "type": "error",
+            "result": {
+                "answer": f"## Internal Error\n\nAn error occurred while processing your command:\n\n```\n{error_detail}\n```\n\nPlease check the server logs for more details.",
+                "ok": False,
+                "status": "error",
+                "error": error_detail
+            },
+            "ok": False
+        }
 
     # Update session memory if qcat entities were returned
+    # BUT skip list_all_* intents (they would populate entire entity list)
     if "entities" in result:
         # Create or reuse session_id
         session_id = body.session_id or str(uuid.uuid4())
@@ -247,14 +266,17 @@ def unified_command(body: UnifiedCommand):
                 "views": set(), "functions": set()
             }
 
-        entities = result.get("entities", [])
-        for entity in entities:
-            kind = entity.get("kind")
-            name = entity.get("name")
-            if kind and name:
-                plural = kind + "s"
-                if plural in SESSION_MEMORY[session_id]:
-                    SESSION_MEMORY[session_id][plural].add(name)
+        # Check if this is a list_all_* intent (should not populate entity memory)
+        intent = result.get("intent")
+        if not (intent and intent.startswith("list_all_")):
+            entities = result.get("entities", [])
+            for entity in entities:
+                kind = entity.get("kind")
+                name = entity.get("name")
+                if kind and name:
+                    plural = kind + "s"
+                    if plural in SESSION_MEMORY[session_id]:
+                        SESSION_MEMORY[session_id][plural].add(name)
 
         memory = {k: sorted(v) for k, v in SESSION_MEMORY[session_id].items()}
         result["session_id"] = session_id
@@ -270,7 +292,8 @@ def unified_command(body: UnifiedCommand):
 
     # Check if operation failed (answer contains "Error")
     answer = result.get("answer", "")
-    if answer.startswith("Error") or answer.startswith("✗"):
+    # Handle case where answer might not be a string (e.g., dict for compare_sql)
+    if isinstance(answer, str) and (answer.startswith("Error") or answer.startswith("✗")):
         return {
             "type": "error",
             "result": result,

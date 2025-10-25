@@ -65,9 +65,10 @@ Natural Language Query
 ### Data Flow Pipeline
 
 1. **Input**: SQL Server catalog metadata (`../output/catalog.json`) + optional SQL DDL exports (`../output/sql_exports/`)
-2. **Index Loading**: Web server loads `../output/vector_index/items.json` (flattened catalog for faster access)
-   - **Note**: items.json must be pre-built from external tooling
-   - **Note**: Embeddings (embeddings.npy) may exist but are NOT used in current query flow
+2. **Index Loading**: Web server loads catalog data directly from `catalog.json`:
+   - Builds internal indexes on startup (`load_items()` in `qcat/items.py`)
+   - Fast and deterministic (no external files needed)
+   - Cached in memory for performance
 3. **Query Resolution**:
    - **Web UI** (`webapp.py`): Natural language → LLM intent classification → deterministic ops
 
@@ -209,14 +210,116 @@ class ClusterState:
 **Clustering Algorithm** (cluster/clustering.py):
 ```
 1. Parse catalog.json to extract procedures and their table access (Reads + Writes)
-2. Build procedure → table set mapping
-3. Group procedures by identical table access sets (creates ProcedureGroups)
-4. Cluster ProcedureGroups by shared tables (creates Clusters):
-   - Groups that share tables go into same cluster
-   - Use union-find algorithm for connected components
-5. Identify global tables (accessed by >= 2 clusters)
-6. Serialize to clusters.json
+2. Filter out system tables and custom patterns (optional but recommended)
+   - Excludes: sys.*, sysobjects, INFORMATION_SCHEMA.*, etc.
+   - Avoids artificial connections through metadata tables
+3. Build procedure → table set mapping
+4. Group procedures by identical table access sets (creates ProcedureGroups)
+5. Build similarity edges between groups (Jaccard similarity)
+6. Cluster ProcedureGroups using 2-phase greedy assignment:
+   Phase 1: Isolated groups (zero similarity) → singleton clusters
+   Phase 2: Connected groups → assign to cluster with highest similarity
+   - Calculate cluster-level similarity (Jaccard with all cluster tables)
+   - Assign to best-fit cluster if similarity >= min_assignment_similarity
+   - Otherwise create new cluster
+   - Avoids transitive closure problems of union-find
+7. Identify global tables (accessed by >= 2 clusters)
+8. Serialize to clusters.json
 ```
+
+**Why 2-Phase Algorithm?**
+
+The original clustering algorithm used **union-find** to group procedure groups based on shared table access. This caused **transitive closure** issues where unrelated groups would be merged into massive "catch-all" clusters.
+
+*Example of the Problem*:
+```
+Group A: [table_x, table_y]
+Group B: [table_y, table_z]  ← shares table_y with A
+Group C: [table_z, table_w]  ← shares table_z with B
+
+Union-Find Result: A, B, C all in ONE cluster
+Problem: A and C share NO tables, but they end up together!
+```
+
+The **2-phase greedy assignment algorithm** solves this:
+
+- **Phase 1: Isolate the Isolated**
+  - Identify all procedure groups with **zero similarity** to all other groups
+  - Each isolated group gets its own singleton cluster
+  - These are the "pure" functional areas with no table overlap
+
+- **Phase 2: Best-Fit Assignment**
+  - Process remaining (connected) groups in sorted order (by table count, descending)
+  - For each group:
+    1. Calculate **cluster-level similarity** with each existing cluster (Jaccard similarity between group tables and union of all cluster tables)
+    2. Assign to cluster with **highest similarity**
+    3. If best similarity < `min_assignment_similarity` threshold → create new cluster
+  - **Tie-breaking**: Prefer smaller clusters for better balance
+
+**Benefits**:
+- **No Transitive Closure**: Groups only join clusters they ACTUALLY share tables with
+- **Configurable Granularity**: `min_assignment_similarity` parameter controls cluster granularity:
+  - **0.0** (default): Allow any positive similarity (fewer, larger clusters)
+  - **0.4-0.6** (recommended): Balanced clustering for most databases
+  - **0.7-1.0**: Strict clustering (many small clusters, maximum granularity)
+- **Better Balance**: More even distribution of procedures across clusters
+- **Deterministic**: Same input always produces same output
+
+**Performance**: O(N × C × T) where N = number of procedure groups, C = number of clusters, T = average tables per group/cluster. Very fast for typical databases (<1000 procedures).
+
+**Backward Compatibility**: Old `build_clusters()` function still available (marked DEPRECATED). Set `use_two_phase: false` to use old algorithm.
+
+**Why Filter System Tables?**
+
+SQL Server system tables/views like `sysobjects`, `sys.objects`, `syscolumns`, `INFORMATION_SCHEMA.*`, etc. are frequently accessed by stored procedures for metadata operations. When included in clustering, they create **artificial connections** between unrelated procedures.
+
+*Example of the Problem*:
+```
+Procedure A: Reads [Orders, Customers, sysobjects]
+Procedure B: Reads [Products, Inventory, sysobjects]
+Procedure C: Reads [Analytics, Reports, sysobjects]
+
+Without Filtering:
+  - All three procedures share "sysobjects"
+  - They get clustered together
+  - Result: One massive cluster with unrelated business logic
+
+With Filtering:
+  - System table "sysobjects" is ignored
+  - Procedures have NO shared tables
+  - Result: Three separate clusters by business domain
+```
+
+**Filtered Table Patterns**:
+
+1. **Modern Catalog Views** (`sys.*`): `sys.objects`, `sys.tables`, `sys.columns`, `sys.procedures`, `sys.indexes`, `sys.foreign_keys`, `sys.sql_dependencies`, and all other `sys.*` views
+
+2. **Legacy System Tables**: `sysobjects`, `syscolumns`, `sysindexes`, `systypes`, `sysdepends`, `sysreferences`, `sysusers`, `syspermissions`, and 20+ other legacy system tables
+
+3. **ANSI Standard Views** (`INFORMATION_SCHEMA.*`): `INFORMATION_SCHEMA.TABLES`, `INFORMATION_SCHEMA.COLUMNS`, `INFORMATION_SCHEMA.ROUTINES`, and all other ANSI views
+
+4. **Other System Objects**: `MSreplication_*` (replication tables), `dtproperties` (legacy extended properties), `trace_xe_*` (trace tables)
+
+**Implementation**: The `is_system_table()` function in `cluster/clustering.py` checks table names against these patterns. The `gather_procedure_groups()` function excludes system tables when `exclude_system_tables=True` (default).
+
+**Edge Cases Handled**:
+- Schema-qualified names: Both `sys.objects` and `dbo.sysobjects` are filtered
+- Separator variants: Handles both `.` and `·` separators
+- Case insensitivity: `sys.objects`, `SYS.OBJECTS`, `Sys.Objects` all filtered
+- User tables with "sys" in name: `dbo.system_config` is NOT filtered (doesn't match pattern)
+- Procedures with ONLY system tables: Excluded from clustering (no business tables to group by)
+
+**Statistics Logging**: When filtering is active, the clustering algorithm logs:
+```
+[gather_procedure_groups] Excluded 47 system/pattern table references
+```
+
+**Benefits**:
+- ✅ Procedures grouped only by business table access
+- ✅ Better cluster balance and separation
+- ✅ Global tables show actual shared business tables
+- ✅ Clustering reflects business domain organization
+- ✅ Zero performance impact
 
 **State Synchronization Pattern**:
 - **CRITICAL**: All operations immediately save state with `_save_snapshot()`
@@ -278,15 +381,16 @@ source .venv/bin/activate  # macOS/Linux
 pip install fastapi uvicorn sentence-transformers numpy openai requests
 ```
 
-### Index Requirements
+### Data Requirements
 
-The web server requires `../output/vector_index/items.json` to operate. This file should be pre-built from external tooling that processes your SQL Server catalog.
+The web server requires only `../output/catalog.json` (SQL Server catalog metadata). All other files are optional.
 
-**Required file**: `../output/vector_index/items.json` (flattened catalog for fast loading)
+**Required file**:
+- `../output/catalog.json` - SQL Server catalog metadata with tables, views, procedures, functions, and their relationships
 
-**Optional files** (legacy, not used):
-- `../output/vector_index/embeddings.npy` - Vector embeddings (legacy)
-- `../output/vector_index/meta.json` - Embedding metadata (legacy)
+**Optional files** (SQL source resolution):
+- `../output/sql_exports/{kind}/{schema}.{name}.sql` - Pre-exported SQL DDL for each object
+- `../sql_files/**/*.sql` - Fallback SQL source files scanned recursively
 
 **Environment variables**:
 - `SQL_OUTPUT_DIR=/path/to/output` - Override default `../output` location
@@ -302,9 +406,26 @@ python -m cluster.clustering
 # Or use the web UI "Reset Clusters" button (destructive rebuild)
 ```
 
+**Clustering Parameters** (stored in clusters.json):
+- `similarity_threshold` (default: 0.5) - Minimum Jaccard similarity to create edge between groups
+- `min_group_size` (default: 1) - Minimum table count for group to participate in similarity
+- `min_global_clusters` (default: 2) - Minimum clusters accessing a table to mark it as global
+- `min_assignment_similarity` (default: 0.0) - Minimum similarity to assign group to cluster
+  - **0.0**: Allow any positive similarity (fewer, larger clusters)
+  - **0.4-0.6**: Balanced clustering (recommended for most cases)
+  - **0.7-1.0**: Strict clustering (many small clusters, max granularity)
+- `use_two_phase` (default: True) - Use new 2-phase algorithm vs old union-find
+- `exclude_system_tables` (default: True) - Exclude SQL Server system tables from clustering
+  - Filters out: `sys.*`, `sysobjects`, `syscolumns`, `INFORMATION_SCHEMA.*`, etc.
+  - **Why**: System tables create artificial connections between unrelated procedures
+  - **Benefit**: Cleaner clustering based on actual business table access
+- `exclude_patterns` (default: []) - Additional table name patterns to exclude
+  - Example: `["temp_", "archive_", "staging_"]` to exclude temporary/archive tables
+  - Patterns are matched case-insensitively using substring matching
+
 **Clustering Output**:
 - Creates `../output/cluster/clusters.json` with:
-  - Clusters grouped by shared table access
+  - Clusters grouped by shared table access (using 2-phase algorithm)
   - Procedure groups (procedures with identical table sets)
   - Global tables (accessed by >= 2 clusters)
   - Empty trash
@@ -325,8 +446,8 @@ uvicorn webapp:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Server Dependencies**:
-- Requires `../output/vector_index/items.json` (pre-built from external tooling)
-- Requires `../output/cluster/clusters.json` (auto-created on first cluster command)
+- Requires `../output/catalog.json` (SQL Server catalog metadata)
+- Optional `../output/cluster/clusters.json` (auto-created on first cluster command)
 - Reads `.env` or environment for `OPENAI_API_KEY` (intent classification)
 
 ### Unified Web UI Commands
@@ -506,11 +627,8 @@ Override via environment variables:
 
 **Verify required files exist**:
 ```bash
-# Ensure catalog.json exists
+# Ensure catalog.json exists (REQUIRED - only file needed!)
 ls -l ../output/catalog.json
-
-# Ensure items.json exists (pre-built from external tooling)
-ls -l ../output/vector_index/items.json
 ```
 
 **Test web server**:
@@ -660,29 +778,41 @@ Static files served via FastAPI's `StaticFiles` at `/static` and root `/`.
 
 ### Cluster-Related Issues
 
-3. **Missing tables not showing connections**:
+3. **Unbalanced clusters (one cluster with many procedures, others with few)**:
+   - **Symptom**: After clustering, one cluster has 80% of procedures, rest are tiny
+   - **Cause 1**: Old union-find algorithm creates transitive closures, merging unrelated groups
+   - **Cause 2**: System tables (`sysobjects`, `sys.*`) create artificial connections
+   - **Solution 1**: Use new 2-phase algorithm (default in latest version)
+   - **Solution 2**: Enable system table filtering (default: `exclude_system_tables=True`)
+   - **Solution 3**: Increase `min_assignment_similarity` parameter (try 0.4-0.6)
+   - **Test**: Run `python test_two_phase_clustering.py` to compare algorithms
+   - **Test**: Run `python test_system_table_filtering.py` to verify filtering
+   - **Rebuild**: Use "Reset Clusters" in web UI or `python -m cluster.clustering`
+
+4. **Missing tables not showing connections**:
    - **Fixed in latest version**: cluster/backend.py:1113-1122
    - Missing tables now properly connected to clusters in summary view
 
-4. **"list all tables" showing no results**:
+5. **"list all tables" showing no results**:
    - **Fixed in latest version**: webapp/agent.py:243-274
    - Now correctly calls qcat_ops.list_all_tables() instead of non-existent list_all_entities()
 
-5. **Delete command hanging with "Processing query..." forever**:
+6. **Delete command hanging with "Processing query..." forever**:
    - **Fixed in latest version**: static/app.js:308-323
    - Now handles `{"type": "error"}` responses from backend
 
-6. **Cluster operations not persisting**:
+7. **Cluster operations not persisting**:
    - **Check**: Ensure _save_snapshot() is called after each operation
    - **Verify**: Check ../output/cluster/clusters.json modification timestamp
    - **Debug**: Enable debug logging in cluster/backend.py
 
 ### Index/Data Issues
 
-7. **"Items not found" or "Index missing"**:
-   - **Cause**: items.json not built or catalog.json missing
-   - **Solution**: Build items.json using external tooling that processes your SQL Server catalog
-   - **Check**: Verify ../output/vector_index/items.json exists
+7. **"Catalog not found" or "FileNotFoundError"**:
+   - **Cause**: catalog.json missing or empty
+   - **Solution**: Ensure ../output/catalog.json exists with valid SQL Server catalog metadata
+   - **Check**: `ls -l ../output/catalog.json` and verify it's not empty
+   - **Note**: This is the only required data file
 
 8. **Procedure not found in clusters**:
    - **Check trash**: Use "list trash" command
@@ -754,8 +884,8 @@ curl -X POST http://localhost:8000/api/qcat/ask \
 ### Starting from Scratch
 
 ```bash
-# 1. Ensure items.json exists (pre-built from external tooling)
-ls -l ../output/vector_index/items.json
+# 1. Ensure catalog.json exists (REQUIRED - only file needed!)
+ls -l ../output/catalog.json
 
 # 2. Build initial clusters (optional, auto-created on first use)
 python -m cluster.clustering
@@ -769,14 +899,12 @@ open http://localhost:8000
 
 ### Backup Important Data
 
+- `../output/catalog.json` - SQL Server catalog metadata (CRITICAL - only required file, source of truth)
 - `../output/cluster/clusters.json` - Cluster state with customizations (CRITICAL - contains user edits!)
-- `../output/catalog.json` - Source catalog metadata (critical, generated externally)
-- `../output/vector_index/items.json` - Flattened catalog (can rebuild from catalog.json)
-- `../output/vector_index/embeddings.npy` - Legacy embeddings (not used, can rebuild)
 
 ### Version Control
 
 - **DO commit**: Source code, CLAUDE.md, package requirements
-- **DON'T commit**: ../output/ directory (too large, generated data)
+- **DON'T commit**: ../output/ directory (generated/external data)
 - **CONSIDER committing**: ../output/cluster/clusters.json IF you want to preserve cluster customizations
-- **DON'T commit**: ../output/vector_index/ (generated, can rebuild)
+- **DON'T commit**: ../output/catalog.json (generated externally from SQL Server)

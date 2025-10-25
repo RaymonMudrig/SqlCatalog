@@ -185,8 +185,12 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
     items = service.items
     emb = service.emb
 
-    # Extract common params
-    name = params.get("name")
+    # Extract common params with fallbacks for different LLM field names
+    name = (params.get("name") or
+            params.get("procedure_name") or
+            params.get("table_name") or
+            params.get("view_name") or
+            params.get("function_name"))
     kind = params.get("kind")
     name_a = params.get("name_a")
     name_b = params.get("name_b")
@@ -206,7 +210,10 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
 
     if intent == "tables_accessed_by_procedure":
         result = qcat_ops.tables_accessed_by_procedure(items, name)
-        return {"answer": qcat_fmt.render_tables_accessed_by_procedure(items, name), "entities": result}
+        # result is a tuple (reads_list, writes_list) - convert to entity dicts
+        reads, writes = result
+        entities = [{"kind": "table", "name": t, "safe_name": t} for t in reads + writes]
+        return {"answer": qcat_fmt.render_tables_accessed_by_procedure(items, name), "entities": entities}
 
     if intent == "tables_accessed_by_view":
         result = qcat_ops.tables_accessed_by_view(items, name)
@@ -214,7 +221,9 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
 
     if intent == "unaccessed_tables":
         result = qcat_ops.unaccessed_tables(items)
-        return {"answer": qcat_fmt.render_unaccessed_tables(items), "entities": result}
+        # Convert list of names to list of entity dicts for compatibility
+        entities = [{"kind": "table", "name": n, "safe_name": n} for n in result]
+        return {"answer": qcat_fmt.render_unaccessed_tables(items), "entities": entities, "intent": intent}
 
     if intent == "procs_called_by_procedure":
         result = qcat_ops.procs_called_by_procedure(items, name)
@@ -222,15 +231,23 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
 
     if intent == "call_tree":
         result = qcat_ops.call_tree(items, name)
-        return {"answer": qcat_fmt.render_call_tree(items, name), "entities": result}
+        # result is list of procedure names (strings) - convert to entity dicts
+        entities = [{"kind": "procedure", "name": p, "safe_name": p} for p in result]
+        return {"answer": qcat_fmt.render_call_tree(items, name), "entities": entities}
 
     if intent == "list_columns_of_table":
         result = qcat_ops.list_columns_of_table(items, name)
-        return {"answer": qcat_fmt.render_list_columns_of_table(items, name), "entities": result}
+        # Extract the table entity from result (result is a dict with 'found', 'match', 'columns')
+        if result.get("found") and result.get("match"):
+            table_entity = {"kind": "table", "name": name, "safe_name": result["match"].get("safe_name", name)}
+            return {"answer": qcat_fmt.render_list_columns_of_table(items, name), "entities": [table_entity]}
+        return {"answer": qcat_fmt.render_list_columns_of_table(items, name), "entities": []}
 
     if intent == "columns_returned_by_procedure":
         result = qcat_ops.columns_returned_by_procedure(items, name)
-        return {"answer": qcat_fmt.render_columns_returned_by_procedure(items, name), "entities": result}
+        # result is list of column names (strings) - columns aren't entities, so return procedure entity
+        procedure_entity = {"kind": "procedure", "name": name, "safe_name": name}
+        return {"answer": qcat_fmt.render_columns_returned_by_procedure(items, name), "entities": [procedure_entity]}
 
     if intent == "unused_columns_of_table":
         result = qcat_ops.unused_columns_of_table(items, name)
@@ -250,7 +267,7 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         answer = qcat_fmt.render_list_all_tables(items, schema=schema, name_pattern=pattern)
         # Convert list of names to list of entity dicts for compatibility
         entities = [{"kind": "table", "name": n, "safe_name": n} for n in result]
-        return {"answer": answer, "entities": entities}
+        return {"answer": answer, "entities": entities, "intent": intent}
 
     if intent == "list_all_views":
         schema = params.get("schema")
@@ -258,7 +275,7 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         result = qcat_ops.list_all_views(items, schema=schema, name_pattern=pattern)
         answer = qcat_fmt.render_list_all_views(items, schema=schema, name_pattern=pattern)
         entities = [{"kind": "view", "name": n, "safe_name": n} for n in result]
-        return {"answer": answer, "entities": entities}
+        return {"answer": answer, "entities": entities, "intent": intent}
 
     if intent == "list_all_procedures":
         schema = params.get("schema")
@@ -266,7 +283,7 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         result = qcat_ops.list_all_procedures(items, schema=schema, name_pattern=pattern)
         answer = qcat_fmt.render_list_all_procedures(items, schema=schema, name_pattern=pattern)
         entities = [{"kind": "procedure", "name": n, "safe_name": n} for n in result]
-        return {"answer": answer, "entities": entities}
+        return {"answer": answer, "entities": entities, "intent": intent}
 
     if intent == "list_all_functions":
         schema = params.get("schema")
@@ -274,7 +291,7 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         result = qcat_ops.list_all_functions(items, schema=schema, name_pattern=pattern)
         answer = qcat_fmt.render_list_all_functions(items, schema=schema, name_pattern=pattern)
         entities = [{"kind": "function", "name": n, "safe_name": n} for n in result]
-        return {"answer": answer, "entities": entities}
+        return {"answer": answer, "entities": entities, "intent": intent}
 
     if intent == "compare_sql":
         # Extract kinds if provided, otherwise None (auto-detect)
@@ -284,8 +301,10 @@ def _execute_qcat_intent(intent: str, params: Dict[str, Any], service: Any) -> D
         return {"answer": qcat_fmt.render_compare_sql(items, kind_a, name_a, kind_b, name_b), "unified_diff": result.get("unified_diff")}
 
     if intent == "find_similar_sql":
-        result = qcat_ops.find_similar_sql(items, emb, name, k)
         threshold = params.get("threshold", 50.0)
-        return {"answer": qcat_fmt.render_find_similar_sql(items, kind, name, threshold), "entities": result}
+        result = qcat_ops.find_similar_sql(items, kind, name, threshold)
+        # Convert list of (name, score) tuples to entity dicts for frontend
+        entities = [{"kind": kind or "any", "name": entity_name} for entity_name, _ in result]
+        return {"answer": qcat_fmt.render_find_similar_sql(items, kind, name, threshold), "entities": entities}
 
     return {"answer": f"Sorry, I couldn't handle qcat intent `{intent}`."}

@@ -80,6 +80,8 @@ CLUSTER:
 QCAT:
 - "which procedures access Order table" -> {{"intent": "procs_access_table", "backend": "qcat", "confidence": 1.0, "name": "Order", "kind": "table"}}
 - "show me all tables" -> {{"intent": "list_all_tables", "backend": "qcat", "confidence": 1.0}}
+- "list all unused tables" -> {{"intent": "unaccessed_tables", "backend": "qcat", "confidence": 1.0}}
+- "show unused tables" -> {{"intent": "unaccessed_tables", "backend": "qcat", "confidence": 1.0}}
 - "compare dbo.Order with dbo.Order_Archive" -> {{"intent": "compare_sql", "backend": "qcat", "confidence": 1.0, "name_a": "dbo.Order", "name_b": "dbo.Order_Archive", "kind_a": null, "kind_b": null}}
 - "compare table dbo.Order with table dbo.Order_Archive" -> {{"intent": "compare_sql", "backend": "qcat", "confidence": 1.0, "name_a": "dbo.Order", "kind_a": "table", "name_b": "dbo.Order_Archive", "kind_b": "table"}}
 - "list columns of Customer table" -> {{"intent": "list_columns_of_table", "backend": "qcat", "confidence": 1.0, "name": "Customer", "kind": "table"}}
@@ -151,6 +153,7 @@ def _normalize_llm_fields(obj: dict) -> dict:
 def _lmstudio_classify(prompt: str) -> Dict[str, Any] | None:
     """Use LM Studio to classify unified intent"""
     if not _USE_LLM:
+        print(f"[webapp.llm_intent] LLM disabled (USE_LLM={_USE_LLM})")
         return None
     try:
         payload = {
@@ -163,21 +166,28 @@ def _lmstudio_classify(prompt: str) -> Dict[str, Any] | None:
             "max_tokens": 256,
             "stream": False,
         }
+        print(f"[webapp.llm_intent] Calling LM Studio at {_LM_URL}")
         r = requests.post(_LM_URL, json=payload, timeout=_LM_TIMEOUT)
         r.raise_for_status()
         data = r.json()
         txt = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        print(f"[webapp.llm_intent] LLM response: {txt[:200]}")
         obj = _safe_json_loads(txt)
         if not isinstance(obj, dict):
+            print(f"[webapp.llm_intent] Failed to parse JSON from LLM response")
             return None
         obj = _normalize_llm_fields(obj)
         intent = obj.get("intent")
         if intent not in ALL_INTENTS:
+            print(f"[webapp.llm_intent] Intent '{intent}' not in allowed intents")
             return None
         obj["source"] = "llm"
+        print(f"[webapp.llm_intent] Successfully classified: {obj}")
         return obj
     except Exception as e:
         print(f"[webapp.llm_intent] LLM classification failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

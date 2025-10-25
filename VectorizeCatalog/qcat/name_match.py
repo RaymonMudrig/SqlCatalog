@@ -1,13 +1,8 @@
 import re
-import numpy as np  # <-- add this line
 from typing import List, Tuple, Dict, Any
 
-try:
-    from .embeddings import embed_query, cosine_scores
-    from .loader import load_emb
-except ImportError:
-    from embeddings import embed_query, cosine_scores
-    from loader import load_emb
+# Embeddings are no longer used in the current query flow
+# This module only uses deterministic name matching
 
 
 # --- Name splitting / tokens ---
@@ -114,17 +109,8 @@ def choose_candidates_by_kind(q: str, items: List[Dict[str, Any]], kind: str, k:
             if s not in seen: out.append(s); seen.add(s)
         return out[:k] if out else []
 
-    # semantic fallback
-    try:
-        emb = load_emb()
-    except Exception:
-        emb = None
-    if emb is not None and inds:
-        mat = emb[inds]
-        qvec = embed_query(q)
-        scores = cosine_scores(qvec, mat)
-        order = np.argsort(-scores)[:max(5, k)]
-        return [kind_items[int(i)]["safe_name"] for i in order][:k]
+    # Semantic fallback removed - embeddings no longer used
+    # Falls through to token substring fallback below
 
     # token substring fallback
     words = [w for w in re.split(r"[^A-Za-z0-9_]+", q) if w]
